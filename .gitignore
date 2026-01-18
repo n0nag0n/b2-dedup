@@ -1,0 +1,8 @@
+venv/
+*.db
+.b2_dedup_cache.json
+__pycache__/
+*.py[cod]
+*$py.class
+.env
+.DS_Store
