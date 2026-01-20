@@ -11,8 +11,8 @@ import argparse
 import json
 import threading
 from pathlib import Path
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime, timedelta
+from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
+from datetime import datetime, timedelta, timezone
 from tqdm import tqdm
 
 # ================= CONFIG =================
@@ -176,8 +176,10 @@ class B2Manager:
             return False
 
     def upload_file(self, local_path: Path, remote_path: str):
-        with open(local_path, "rb") as f:
-            self.bucket.upload_bytes(f.read(), file_name=remote_path)
+        self.bucket.upload_local_file(
+            local_file=str(local_path),
+            file_name=remote_path
+        )
 
 
 def process_file(args_tuple):
@@ -216,11 +218,20 @@ def process_file(args_tuple):
 
             # Actual upload
             b2.upload_file(filepath, remote_name)
+            
+            # Use INSERT OR IGNORE to handle race conditions where another thread inserted the same hash
+            # between our check and this insert.
             c.execute(
-                "INSERT INTO files (hash, size, drive_name, original_path, upload_path, uploaded_at) "
+                "INSERT OR IGNORE INTO files (hash, size, drive_name, original_path, upload_path, uploaded_at) "
                 "VALUES (?, ?, ?, ?, ?, ?)",
-                (file_hash, actual_size, drive_name, original_rel_path, remote_name, datetime.now(datetime.UTC).isoformat())
+                (file_hash, actual_size, drive_name, original_rel_path, remote_name, datetime.now(timezone.utc).isoformat())
             )
+            
+            # Check if row was actually inserted
+            if c.rowcount == 0:
+                conn.commit()
+                return "duplicate", filepath
+
             conn.commit()
             return "uploaded", filepath
 
@@ -277,31 +288,56 @@ def main():
     stats = {"scanned": 0, "duplicate": 0, "uploaded": 0, "would_upload": 0, "exists": 0, "error": 0}
     errors = []
 
-    with ThreadPoolExecutor(max_workers=args.workers) as executor:
-        futures = []
+    def file_generator():
+        """Generator that yields file tasks one at a time (low memory)."""
         for root, _, files in os.walk(source_path):
             for filename in files:
                 filepath = Path(root) / filename
                 try:
                     rel_path = filepath.relative_to(source_path)
-                    futures.append(executor.submit(process_file, (filepath, rel_path, args.drive_name, args.scan_only, args.dry_run, b2)))
+                    yield (filepath, rel_path, args.drive_name, args.scan_only, args.dry_run, b2)
                 except:
                     pass
 
+    with ThreadPoolExecutor(max_workers=args.workers) as executor:
+        # Use bounded submission: only keep max_in_flight futures in memory at once
+        max_in_flight = args.workers * 2
+        pending = set()
+        file_iter = file_generator()
+        
         with tqdm(total=total_files, desc="Processing", unit="file") as pbar:
-            for future in as_completed(futures):
-                result = future.result()
-                if len(result) == 3:
-                    status, filepath, err = result
-                    errors.append((filepath, err))
-                else:
-                    status, filepath = result
-                stats[status] += 1
-                if args.verbose:
-                    # Print above progress bar without disrupting it
-                    status_icon = {"uploaded": "↑", "scanned": "✓", "duplicate": "≡", "exists": "○", "would_upload": "?", "error": "✗"}
-                    pbar.write(f"  {status_icon.get(status, ' ')} [{status}] {filepath}")
-                pbar.update(1)
+            # Initial fill of the pending set
+            for task in file_iter:
+                pending.add(executor.submit(process_file, task))
+                if len(pending) >= max_in_flight:
+                    break
+            
+            # Process as we go, refilling as futures complete
+            while pending:
+                # Wait for at least one future to complete
+                done, pending = wait(pending, return_when=FIRST_COMPLETED)
+                
+                for future in done:
+                    result = future.result()
+                    err_msg = ""
+                    if len(result) == 3:
+                        status, filepath, err = result
+                        errors.append((filepath, err))
+                        err_msg = f": {err}"
+                    else:
+                        status, filepath = result
+                    stats[status] += 1
+                    if args.verbose:
+                        status_icon = {"uploaded": "↑", "scanned": "✓", "duplicate": "≡", "exists": "○", "would_upload": "?", "error": "✗"}
+                        pbar.write(f"  {status_icon.get(status, ' ')} [{status}] {filepath}{err_msg}")
+                    pbar.update(1)
+                    
+                    # Refill: submit one new task for each completed one
+                    try:
+                        new_task = next(file_iter)
+                        pending.add(executor.submit(process_file, new_task))
+                    except StopIteration:
+                        pass  # No more files to process
 
     print("\nSummary:")
     if args.scan_only:
