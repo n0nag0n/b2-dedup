@@ -237,6 +237,7 @@ def main():
     parser.add_argument("--dry-run", action="store_true", help="Simulate full mode without uploading")
     parser.add_argument("--refresh-count", action="store_true", help="Force re-count files (ignore cache)")
     parser.add_argument("--workers", type=int, default=DEFAULT_MAX_WORKERS, help=f"Parallel workers (default: {DEFAULT_MAX_WORKERS})")
+    parser.add_argument("-v", "--verbose", action="store_true", help="Show each file being processed")
     args = parser.parse_args()
 
     if args.scan_only and args.dry_run:
@@ -296,6 +297,10 @@ def main():
                 else:
                     status, filepath = result
                 stats[status] += 1
+                if args.verbose:
+                    # Print above progress bar without disrupting it
+                    status_icon = {"uploaded": "↑", "scanned": "✓", "duplicate": "≡", "exists": "○", "would_upload": "?", "error": "✗"}
+                    pbar.write(f"  {status_icon.get(status, ' ')} [{status}] {filepath}")
                 pbar.update(1)
 
     print("\nSummary:")
