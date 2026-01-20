@@ -79,6 +79,7 @@ python b2_dedup.py [SOURCE] --drive-name [DRIVE] --bucket [BUCKET] [FLAGS]
 | `--dry-run` | Simulate uploads and DB updates without actually performing them. |
 | `--workers` | Number of parallel worker threads (default: 10). |
 | `--refresh-count` | Ignore the file count cache and re-scan the source directory. |
+| `-v`, `--verbose` | Show each file being processed above the progress bar. |
 
 ---
 
