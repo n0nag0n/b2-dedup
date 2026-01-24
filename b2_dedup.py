@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """
-Parallel streaming deduplicating uploader to Backblaze B2
-Supports --scan-only mode, --dry-run, and accurate progress bars
+Parallel streaming deduplicating uploader/downloader for Backblaze B2
+Supports upload with pointer files for duplicates, download with pointer resolution,
+--scan-only mode, --dry-run, and accurate progress bars
 """
 
 import os
@@ -10,6 +11,7 @@ import sqlite3
 import argparse
 import json
 import threading
+import io
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
 from datetime import datetime, timedelta, timezone
@@ -21,6 +23,7 @@ CACHE_PATH = Path.home() / ".b2_dedup_cache.json"
 DEFAULT_MAX_WORKERS = 10
 CHUNK_SIZE = 4 * 1024 * 1024                 # 4MB
 FILE_COUNT_CACHE_DAYS = 7                    # Cache file count for 1 week
+POINTER_EXTENSION = ".b2ptr"
 
 # Thread-local storage for SQLite connections
 thread_local = threading.local()
@@ -37,16 +40,25 @@ def init_db():
     """Initialize the database schema (run once from main thread)."""
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
+    
+    # Unified schema - files table with id primary key
     c.execute('''
         CREATE TABLE IF NOT EXISTS files (
-            hash TEXT PRIMARY KEY,
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            hash TEXT NOT NULL,
             size INTEGER NOT NULL,
-            drive_name TEXT,
-            original_path TEXT,
+            drive_name TEXT NOT NULL,
+            file_path TEXT NOT NULL,
             upload_path TEXT,
-            uploaded_at TEXT
+            is_original INTEGER DEFAULT 0,
+            created_at TEXT,
+            UNIQUE(drive_name, file_path)
         )
     ''')
+    
+    # Multi-column index for fast lookups
+    c.execute('CREATE INDEX IF NOT EXISTS idx_files_hash_original ON files(hash, is_original)')
+    
     conn.commit()
     conn.close()
 
@@ -144,6 +156,18 @@ def sha256_file(filepath: Path) -> tuple[str, int]:
     return sha256.hexdigest(), size
 
 
+def create_pointer_content(original_hash: str, original_path: str) -> bytes:
+    """Create JSON content for a pointer file."""
+    pointer = {
+        "type": "b2_dedup_pointer",
+        "version": 1,
+        "original_hash": original_hash,
+        "original_path": original_path,
+        "pointer_created": datetime.now(timezone.utc).isoformat()
+    }
+    return json.dumps(pointer, indent=2).encode('utf-8')
+
+
 class B2Manager:
     def __init__(self, bucket_name: str):
         from b2sdk.v2 import SqliteAccountInfo, InMemoryAccountInfo, B2Api
@@ -181,6 +205,30 @@ class B2Manager:
             file_name=remote_path
         )
 
+    def upload_bytes(self, content: bytes, remote_path: str, content_type: str = "application/json"):
+        """Upload bytes directly to B2."""
+        self.bucket.upload_bytes(content, remote_path, content_type=content_type)
+
+    def download_file_content(self, remote_path: str) -> bytes:
+        """Download a file and return its content as bytes."""
+        downloaded_file = self.bucket.download_file_by_name(remote_path)
+        buffer = io.BytesIO()
+        downloaded_file.save(buffer)
+        return buffer.getvalue()
+
+    def download_file_to_path(self, remote_path: str, local_path: Path):
+        """Download a file to a local path."""
+        local_path.parent.mkdir(parents=True, exist_ok=True)
+        downloaded_file = self.bucket.download_file_by_name(remote_path)
+        downloaded_file.save_to(str(local_path))
+
+    def list_files(self, prefix: str = "", recursive: bool = True):
+        """List files in the bucket with optional prefix."""
+        if recursive:
+            return self.bucket.ls(prefix, recursive=True)
+        else:
+            return self.bucket.ls(prefix)
+
 
 def process_file(args_tuple):
     filepath, rel_path, drive_name, scan_only, dry_run, b2 = args_tuple
@@ -190,27 +238,80 @@ def process_file(args_tuple):
     c = conn.cursor()
     
     remote_name = f"{drive_name}/{rel_path.as_posix()}"
-    original_rel_path = rel_path.as_posix()  # Relative original path (from drive root)
+    file_path = rel_path.as_posix()  # Relative path from drive root
 
     try:
         file_size = filepath.stat().st_size
         file_hash, actual_size = sha256_file(filepath)
 
-        c.execute("SELECT hash FROM files WHERE hash = ?", (file_hash,))
+        # Check if this exact file path already exists in the database
+        c.execute("SELECT id FROM files WHERE drive_name = ? AND file_path = ?", (drive_name, file_path))
         if c.fetchone():
-            return "duplicate", filepath
+            return "already_tracked", filepath
 
+        # Check if this hash already exists (for any file) - find the original
+        c.execute("SELECT upload_path FROM files WHERE hash = ? AND is_original = 1 LIMIT 1", (file_hash,))
+        existing = c.fetchone()
+        
+        if existing:
+            # This is a duplicate - create pointer file
+            original_upload_path = existing[0]
+            
+            if scan_only:
+                # In scan-only mode, just record the location
+                c.execute(
+                    "INSERT OR IGNORE INTO files (hash, size, drive_name, file_path, upload_path, is_original, created_at) "
+                    "VALUES (?, ?, ?, ?, NULL, 0, ?)",
+                    (file_hash, actual_size, drive_name, file_path, datetime.now(timezone.utc).isoformat())
+                )
+                conn.commit()
+                return "duplicate_recorded", filepath
+            
+            # Create pointer content
+            pointer_content = create_pointer_content(file_hash, original_upload_path)
+            pointer_remote_path = remote_name + POINTER_EXTENSION
+            
+            # Check if pointer already exists
+            if b2.file_exists(pointer_remote_path):
+                c.execute(
+                    "INSERT OR IGNORE INTO files (hash, size, drive_name, file_path, upload_path, is_original, created_at) "
+                    "VALUES (?, ?, ?, ?, NULL, 0, ?)",
+                    (file_hash, actual_size, drive_name, file_path, datetime.now(timezone.utc).isoformat())
+                )
+                conn.commit()
+                return "pointer_exists", filepath
+            
+            if dry_run:
+                return "would_create_pointer", filepath
+            
+            # Upload pointer file
+            b2.upload_bytes(pointer_content, pointer_remote_path)
+            c.execute(
+                "INSERT OR IGNORE INTO files (hash, size, drive_name, file_path, upload_path, is_original, created_at) "
+                "VALUES (?, ?, ?, ?, NULL, 0, ?)",
+                (file_hash, actual_size, drive_name, file_path, datetime.now(timezone.utc).isoformat())
+            )
+            conn.commit()
+            return "pointer_created", filepath
+
+        # This is a new unique file
         if scan_only:
             c.execute(
-                "INSERT OR IGNORE INTO files (hash, size, drive_name, original_path, upload_path) "
-                "VALUES (?, ?, ?, ?, NULL)",
-                (file_hash, actual_size, drive_name, original_rel_path)
+                "INSERT OR IGNORE INTO files (hash, size, drive_name, file_path, upload_path, is_original, created_at) "
+                "VALUES (?, ?, ?, ?, NULL, 1, ?)",
+                (file_hash, actual_size, drive_name, file_path, datetime.now(timezone.utc).isoformat())
             )
             conn.commit()
             return "scanned", filepath
         else:
             # Normal mode: check if already in bucket
             if b2.file_exists(remote_name):
+                c.execute(
+                    "INSERT OR IGNORE INTO files (hash, size, drive_name, file_path, upload_path, is_original, created_at) "
+                    "VALUES (?, ?, ?, ?, ?, 1, ?)",
+                    (file_hash, actual_size, drive_name, file_path, remote_name, datetime.now(timezone.utc).isoformat())
+                )
+                conn.commit()
                 return "exists", filepath
 
             if dry_run:
@@ -219,18 +320,16 @@ def process_file(args_tuple):
             # Actual upload
             b2.upload_file(filepath, remote_name)
             
-            # Use INSERT OR IGNORE to handle race conditions where another thread inserted the same hash
-            # between our check and this insert.
             c.execute(
-                "INSERT OR IGNORE INTO files (hash, size, drive_name, original_path, upload_path, uploaded_at) "
-                "VALUES (?, ?, ?, ?, ?, ?)",
-                (file_hash, actual_size, drive_name, original_rel_path, remote_name, datetime.now(timezone.utc).isoformat())
+                "INSERT OR IGNORE INTO files (hash, size, drive_name, file_path, upload_path, is_original, created_at) "
+                "VALUES (?, ?, ?, ?, ?, 1, ?)",
+                (file_hash, actual_size, drive_name, file_path, remote_name, datetime.now(timezone.utc).isoformat())
             )
             
-            # Check if row was actually inserted
+            # Check if row was actually inserted (race condition handling)
             if c.rowcount == 0:
                 conn.commit()
-                return "duplicate", filepath
+                return "race_duplicate", filepath
 
             conn.commit()
             return "uploaded", filepath
@@ -239,18 +338,8 @@ def process_file(args_tuple):
         return "error", filepath, str(e)
 
 
-def main():
-    parser = argparse.ArgumentParser(description="Streaming B2 deduplicator with scan-only and dry-run modes")
-    parser.add_argument("source", help="Path to the drive/folder")
-    parser.add_argument("--drive-name", required=True, help="Root folder name in B2 (e.g. MasterDrive)")
-    parser.add_argument("--bucket", required=True, help="B2 bucket name")
-    parser.add_argument("--scan-only", action="store_true", help="Only build hash database, no upload")
-    parser.add_argument("--dry-run", action="store_true", help="Simulate full mode without uploading")
-    parser.add_argument("--refresh-count", action="store_true", help="Force re-count files (ignore cache)")
-    parser.add_argument("--workers", type=int, default=DEFAULT_MAX_WORKERS, help=f"Parallel workers (default: {DEFAULT_MAX_WORKERS})")
-    parser.add_argument("-v", "--verbose", action="store_true", help="Show each file being processed")
-    args = parser.parse_args()
-
+def upload_action(args):
+    """Handle the upload subcommand."""
     if args.scan_only and args.dry_run:
         print("Note: --dry-run is ignored in --scan-only mode")
 
@@ -285,7 +374,19 @@ def main():
         save_file_count_to_cache(source_path, args.drive_name, total_files)
         print(f"\nTotal: {total_files:,} files (cached for {FILE_COUNT_CACHE_DAYS} days)\n")
 
-    stats = {"scanned": 0, "duplicate": 0, "uploaded": 0, "would_upload": 0, "exists": 0, "error": 0}
+    stats = {
+        "scanned": 0, 
+        "duplicate_recorded": 0,
+        "already_tracked": 0,
+        "uploaded": 0, 
+        "would_upload": 0, 
+        "exists": 0, 
+        "pointer_created": 0,
+        "pointer_exists": 0,
+        "would_create_pointer": 0,
+        "race_duplicate": 0,
+        "error": 0
+    }
     errors = []
 
     def file_generator():
@@ -328,7 +429,19 @@ def main():
                         status, filepath = result
                     stats[status] += 1
                     if args.verbose:
-                        status_icon = {"uploaded": "↑", "scanned": "✓", "duplicate": "≡", "exists": "○", "would_upload": "?", "error": "✗"}
+                        status_icon = {
+                            "uploaded": "↑", 
+                            "scanned": "✓", 
+                            "duplicate_recorded": "≡",
+                            "already_tracked": "○",
+                            "exists": "○", 
+                            "would_upload": "?", 
+                            "pointer_created": "→",
+                            "pointer_exists": "○",
+                            "would_create_pointer": "?",
+                            "race_duplicate": "≡",
+                            "error": "✗"
+                        }
                         pbar.write(f"  {status_icon.get(status, ' ')} [{status}] {filepath}{err_msg}")
                     pbar.update(1)
                     
@@ -341,19 +454,206 @@ def main():
 
     print("\nSummary:")
     if args.scan_only:
-        print(f"  New files scanned into DB: {stats['scanned']:,}")
+        print(f"  New files scanned (original):  {stats['scanned']:,}")
+        print(f"  Duplicates recorded:           {stats['duplicate_recorded']:,}")
+        print(f"  Already in database:           {stats['already_tracked']:,}")
     else:
-        print(f"  Would upload (dry-run): {stats['would_upload']:,}")
-        print(f"  Uploaded:               {stats['uploaded']:,}")
-        print(f"  Already exists in bucket: {stats['exists']:,}")
-    print(f"  Duplicates skipped: {stats['duplicate']:,}")
+        print(f"  Uploaded (original):           {stats['uploaded']:,}")
+        print(f"  Pointer files created:         {stats['pointer_created']:,}")
+        print(f"  Already exists in bucket:      {stats['exists']:,}")
+        print(f"  Pointer already exists:        {stats['pointer_exists']:,}")
+        print(f"  Already in database:           {stats['already_tracked']:,}")
+        if args.dry_run:
+            print(f"  Would upload (dry-run):        {stats['would_upload']:,}")
+            print(f"  Would create pointer:          {stats['would_create_pointer']:,}")
     if stats['error']:
-        print(f"  Errors: {stats['error']:,}")
+        print(f"  Errors:                        {stats['error']:,}")
 
     if errors:
         print(f"\nFirst 5 errors:")
         for fp, err in errors[:5]:
             print(f"  {fp}: {err}")
+
+
+def download_action(args):
+    """Handle the download subcommand."""
+    dest_path = Path(args.dest).resolve()
+    
+    print(f"Remote:  {args.remote_path}")
+    print(f"Dest:    {dest_path}")
+    print(f"Bucket:  {args.bucket}")
+    print(f"Workers: {args.workers}")
+    if args.dry_run:
+        print(f"Mode:    DRY-RUN")
+    print()
+
+    b2 = B2Manager(args.bucket)
+    
+    # Normalize remote path (ensure it ends with / for prefix matching, unless it's empty)
+    remote_prefix = args.remote_path.rstrip('/') + '/' if args.remote_path else ""
+    
+    # Count files first
+    print("Listing files...")
+    files_to_download = []
+    for file_version, folder_name in b2.list_files(remote_prefix):
+        files_to_download.append(file_version)
+    
+    print(f"Found {len(files_to_download):,} files\n")
+    
+    if not files_to_download:
+        print("No files to download.")
+        return
+
+    stats = {"downloaded": 0, "pointer_resolved": 0, "would_download": 0, "error": 0}
+    errors = []
+    
+    # Cache for resolved pointers (avoid downloading same original multiple times)
+    original_cache = {}
+    cache_lock = threading.Lock()
+
+    def download_file(file_version):
+        """Download a single file, resolving pointers as needed."""
+        remote_name = file_version.file_name
+        
+        # Calculate local path (remove the prefix to get relative path)
+        if remote_prefix and remote_name.startswith(remote_prefix):
+            rel_path = remote_name[len(remote_prefix):]
+        else:
+            rel_path = remote_name
+        
+        try:
+            if remote_name.endswith(POINTER_EXTENSION):
+                # It's a pointer file - resolve it
+                actual_rel_path = rel_path[:-len(POINTER_EXTENSION)]  # Remove .b2ptr
+                local_path = dest_path / actual_rel_path
+                
+                if args.dry_run:
+                    return "would_download", remote_name, f"(pointer → original)"
+                
+                # Download and parse pointer
+                pointer_content = b2.download_file_content(remote_name)
+                pointer = json.loads(pointer_content.decode('utf-8'))
+                original_path = pointer['original_path']
+                
+                # Check cache for already-downloaded original
+                with cache_lock:
+                    if original_path in original_cache:
+                        # Copy from cache
+                        cached_content = original_cache[original_path]
+                        local_path.parent.mkdir(parents=True, exist_ok=True)
+                        with open(local_path, 'wb') as f:
+                            f.write(cached_content)
+                        return "pointer_resolved", remote_name, f"(cached)"
+                
+                # Download original file
+                original_content = b2.download_file_content(original_path)
+                
+                # Cache it for future pointers
+                with cache_lock:
+                    original_cache[original_path] = original_content
+                
+                # Save to local path
+                local_path.parent.mkdir(parents=True, exist_ok=True)
+                with open(local_path, 'wb') as f:
+                    f.write(original_content)
+                
+                return "pointer_resolved", remote_name, None
+            else:
+                # Regular file - download directly
+                local_path = dest_path / rel_path
+                
+                if args.dry_run:
+                    return "would_download", remote_name, None
+                
+                b2.download_file_to_path(remote_name, local_path)
+                return "downloaded", remote_name, None
+                
+        except Exception as e:
+            return "error", remote_name, str(e)
+
+    with ThreadPoolExecutor(max_workers=args.workers) as executor:
+        futures = {executor.submit(download_file, fv): fv for fv in files_to_download}
+        
+        with tqdm(total=len(files_to_download), desc="Downloading", unit="file") as pbar:
+            for future in futures:
+                result = future.result()
+                status, remote_name, extra = result
+                
+                stats[status] += 1
+                
+                if status == "error":
+                    errors.append((remote_name, extra))
+                
+                if args.verbose:
+                    status_icon = {"downloaded": "↓", "pointer_resolved": "→", "would_download": "?", "error": "✗"}
+                    extra_msg = f" {extra}" if extra else ""
+                    pbar.write(f"  {status_icon.get(status, ' ')} [{status}] {remote_name}{extra_msg}")
+                
+                pbar.update(1)
+
+    print("\nSummary:")
+    print(f"  Downloaded directly:           {stats['downloaded']:,}")
+    print(f"  Pointers resolved:             {stats['pointer_resolved']:,}")
+    if args.dry_run:
+        print(f"  Would download (dry-run):      {stats['would_download']:,}")
+    if stats['error']:
+        print(f"  Errors:                        {stats['error']:,}")
+
+    if errors:
+        print(f"\nFirst 5 errors:")
+        for fp, err in errors[:5]:
+            print(f"  {fp}: {err}")
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="B2 deduplicating backup tool with pointer file support",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  Upload files:
+    %(prog)s upload /path/to/drive --drive-name MyDrive --bucket my-bucket
+  
+  Download files:
+    %(prog)s download MyDrive/projects/ --dest /path/to/restore --bucket my-bucket
+"""
+    )
+    
+    subparsers = parser.add_subparsers(dest="action", help="Action to perform")
+    
+    # Upload subcommand
+    upload_parser = subparsers.add_parser("upload", help="Upload files to B2 with deduplication")
+    upload_parser.add_argument("source", help="Path to the drive/folder to upload")
+    upload_parser.add_argument("--drive-name", required=True, help="Root folder name in B2 (e.g. MasterDrive)")
+    upload_parser.add_argument("--bucket", required=True, help="B2 bucket name")
+    upload_parser.add_argument("--scan-only", action="store_true", help="Only build hash database, no upload")
+    upload_parser.add_argument("--dry-run", action="store_true", help="Simulate full mode without uploading")
+    upload_parser.add_argument("--refresh-count", action="store_true", help="Force re-count files (ignore cache)")
+    upload_parser.add_argument("--workers", type=int, default=DEFAULT_MAX_WORKERS, 
+                              help=f"Parallel workers (default: {DEFAULT_MAX_WORKERS})")
+    upload_parser.add_argument("-v", "--verbose", action="store_true", help="Show each file being processed")
+    
+    # Download subcommand
+    download_parser = subparsers.add_parser("download", help="Download files from B2 with pointer resolution")
+    download_parser.add_argument("remote_path", help="B2 path to download (e.g. MyDrive/ or MyDrive/subdir/)")
+    download_parser.add_argument("--dest", required=True, help="Local destination folder")
+    download_parser.add_argument("--bucket", required=True, help="B2 bucket name")
+    download_parser.add_argument("--workers", type=int, default=DEFAULT_MAX_WORKERS,
+                                help=f"Parallel workers (default: {DEFAULT_MAX_WORKERS})")
+    download_parser.add_argument("--dry-run", action="store_true", help="Show what would be downloaded")
+    download_parser.add_argument("-v", "--verbose", action="store_true", help="Show each file being downloaded")
+    
+
+    args = parser.parse_args()
+    
+    if args.action is None:
+        parser.print_help()
+        return
+    
+    if args.action == "upload":
+        upload_action(args)
+    elif args.action == "download":
+        download_action(args)
 
 
 if __name__ == "__main__":
