@@ -17,7 +17,7 @@ thread_local = threading.local()
 
 def get_thread_connection():
     if not hasattr(thread_local, 'connection'):
-        thread_local.connection = sqlite3.connect(DB_PATH)
+        thread_local.connection = sqlite3.connect(DB_PATH, timeout=60.0)
     return thread_local.connection
 
 def add_column_if_not_exists(c, table, column, col_type):
@@ -29,7 +29,9 @@ def add_column_if_not_exists(c, table, column, col_type):
 
 def init_or_update_schema():
     print(f"Connecting to database at {DB_PATH}")
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH, timeout=60.0)
+    # Enable WAL mode for better concurrency
+    conn.execute("PRAGMA journal_mode=WAL")
     c = conn.cursor()
     
     # Add new columns
