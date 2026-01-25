@@ -54,11 +54,101 @@ def init_db():
             created_at TEXT,
             UNIQUE(drive_name, file_path)
         )
+    ''') # Keep compatible with existing setup
+
+    # Groups table for "serve" feature
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS groups (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL UNIQUE,
+            created_at TEXT
+        )
+    ''')
+
+    # Group members table (Many-to-Many)
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS group_members (
+            group_id INTEGER,
+            file_id INTEGER,
+            added_at TEXT,
+            PRIMARY KEY (group_id, file_id),
+            FOREIGN KEY(group_id) REFERENCES groups(id) ON DELETE CASCADE,
+            FOREIGN KEY(file_id) REFERENCES files(id) ON DELETE CASCADE
+        )
     ''')
     
-    # Multi-column index for fast lookups
+    # --- Indexes for Performance (100k-3M rows) ---
+
+    # 1. Covering index for browsing (Drive -> Path)
+    c.execute('CREATE INDEX IF NOT EXISTS idx_files_drive_path ON files(drive_name, file_path)')
+
+    # 2. Sorting indexes
+    c.execute('CREATE INDEX IF NOT EXISTS idx_files_size ON files(size)')
+    c.execute('CREATE INDEX IF NOT EXISTS idx_files_created_at ON files(created_at)')
+    
+    # 3. Original lookup (existing + enhancement)
     c.execute('CREATE INDEX IF NOT EXISTS idx_files_hash_original ON files(hash, is_original)')
     
+    # 4. Group lookup efficiency
+    c.execute('CREATE INDEX IF NOT EXISTS idx_group_members_file_id ON group_members(file_id)')
+
+    # --- Full Text Search (FTS5) ---
+    # We use external content tables to save space, referencing the 'files' table.
+    # Note: Triggers are needed to keep FTS index in sync with main table.
+    
+    try:
+        c.execute('''
+            CREATE VIRTUAL TABLE IF NOT EXISTS files_fts USING fts5(
+                file_path,
+                content='files',
+                content_rowid='id'
+            )
+        ''')
+
+        # Triggers to keep FTS in sync
+        c.execute('''
+            CREATE TRIGGER IF NOT EXISTS files_ai AFTER INSERT ON files BEGIN
+                INSERT INTO files_fts(rowid, file_path) VALUES (new.id, new.file_path);
+            END;
+        ''')
+        c.execute('''
+            CREATE TRIGGER IF NOT EXISTS files_ad AFTER DELETE ON files BEGIN
+                INSERT INTO files_fts(files_fts, rowid, file_path) VALUES('delete', old.id, old.file_path);
+            END;
+        ''')
+        c.execute('''
+            CREATE TRIGGER IF NOT EXISTS files_au AFTER UPDATE ON files BEGIN
+                INSERT INTO files_fts(files_fts, rowid, file_path) VALUES('delete', old.id, old.file_path);
+                INSERT INTO files_fts(rowid, file_path) VALUES (new.id, new.file_path);
+            END;
+        ''')
+    except sqlite3.OperationalError:
+        # FTS5 might not be enabled in SQLite build, typically it is on Linux/Mac
+        print("⚠ Warning: SQLite FTS5 extension not available. Search performance may be degraded.")
+
+    # Check if FTS index needs rebuilding (e.g. if table created after data existed)
+    try:
+        # Check if files exist
+        has_files = c.execute("SELECT 1 FROM files LIMIT 1").fetchone()
+        if has_files:
+            # Check if FTS data exists (shadow table)
+            # Safe way: check if query returns any matches for a common term, or check shadow table
+            # Checking shadow table is reliable for FTS5
+            has_index = False
+            try:
+                # files_fts_data is the main data table for FTS5
+                row_count = c.execute("SELECT count(*) FROM files_fts_data").fetchone()[0]
+                has_index = row_count > 10 # heuristic
+            except sqlite3.OperationalError:
+                pass
+            
+            if not has_index:
+                print("⚠ FTS index appears empty. Rebuilding (this may take a moment)...")
+                c.execute("INSERT INTO files_fts(files_fts) VALUES('rebuild')")
+                print("✓ FTS index rebuilt.")
+    except Exception as e:
+        print(f"⚠ Could not verify FTS index: {e}")
+
     conn.commit()
     conn.close()
 
@@ -605,6 +695,47 @@ def download_action(args):
             print(f"  {fp}: {err}")
 
 
+
+def serve_action(args):
+    """Handle the serve subcommand (launch Web UI)."""
+    import subprocess
+    import sys
+    
+    # Check for dependencies
+    try:
+        import streamlit
+        import pandas
+    except ImportError:
+        print("Error: 'serve' mode requires streamlit and pandas.")
+        print("Please install them with: pip install streamlit pandas")
+        return
+
+    # Path to the b2_gui.py file (assumed to be in same directory)
+    base_dir = Path(__file__).parent.resolve()
+    gui_script = base_dir / "b2_gui.py"
+    
+    if not gui_script.exists():
+        print(f"Error: Could not find {gui_script}")
+        return
+        
+    print(f"Docs: Starting Web UI...")
+    
+    # Construct the command
+    # streamlit run b2_gui.py --server.headless true ...
+    cmd = [
+        sys.executable, "-m", "streamlit", "run", str(gui_script),
+        "--server.headless", "true" # Optional, makes it cleaner in some environments
+    ]
+    
+    if args.port:
+        cmd.extend(["--server.port", str(args.port)])
+        
+    try:
+        subprocess.run(cmd)
+    except KeyboardInterrupt:
+        print("\nWeb UI stopped.")
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="B2 deduplicating backup tool with pointer file support",
@@ -616,6 +747,9 @@ Examples:
   
   Download files:
     %(prog)s download MyDrive/projects/ --dest /path/to/restore --bucket my-bucket
+    
+  Serve Web UI:
+    %(prog)s serve
 """
     )
     
@@ -630,7 +764,7 @@ Examples:
     upload_parser.add_argument("--dry-run", action="store_true", help="Simulate full mode without uploading")
     upload_parser.add_argument("--refresh-count", action="store_true", help="Force re-count files (ignore cache)")
     upload_parser.add_argument("--workers", type=int, default=DEFAULT_MAX_WORKERS, 
-                              help=f"Parallel workers (default: {DEFAULT_MAX_WORKERS})")
+                               help=f"Parallel workers (default: {DEFAULT_MAX_WORKERS})")
     upload_parser.add_argument("-v", "--verbose", action="store_true", help="Show each file being processed")
     
     # Download subcommand
@@ -643,6 +777,9 @@ Examples:
     download_parser.add_argument("--dry-run", action="store_true", help="Show what would be downloaded")
     download_parser.add_argument("-v", "--verbose", action="store_true", help="Show each file being downloaded")
     
+    # Serve subcommand
+    serve_parser = subparsers.add_parser("serve", help="Launch Web UI for searching and browsing")
+    serve_parser.add_argument("--port", type=int, default=8501, help="Port to run the web server on")
 
     args = parser.parse_args()
     
@@ -654,6 +791,8 @@ Examples:
         upload_action(args)
     elif args.action == "download":
         download_action(args)
+    elif args.action == "serve":
+        serve_action(args)
 
 
 if __name__ == "__main__":
