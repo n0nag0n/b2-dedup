@@ -16,6 +16,7 @@ from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
 from datetime import datetime, timedelta, timezone
 from tqdm import tqdm
+from file_utils import get_file_metadata  # EXTENSION_CATEGORY_MAP could be imported if needed
 
 # ================= CONFIG =================
 DB_PATH = Path.home() / "b2_dedup.db"
@@ -52,6 +53,11 @@ def init_db():
             upload_path TEXT,
             is_original INTEGER DEFAULT 0,
             created_at TEXT,
+            file_mtime TEXT,
+            file_ctime TEXT,
+            file_atime TEXT,
+            mime_type TEXT,
+            file_type TEXT,
             UNIQUE(drive_name, file_path)
         )
     ''') # Keep compatible with existing setup
@@ -85,6 +91,12 @@ def init_db():
     # 2. Sorting indexes
     c.execute('CREATE INDEX IF NOT EXISTS idx_files_size ON files(size)')
     c.execute('CREATE INDEX IF NOT EXISTS idx_files_created_at ON files(created_at)')
+    
+    # 2b. New Metadata Indexes
+    c.execute('CREATE INDEX IF NOT EXISTS idx_files_mtime ON files(file_mtime)')
+    c.execute('CREATE INDEX IF NOT EXISTS idx_files_ctime ON files(file_ctime)')
+    c.execute('CREATE INDEX IF NOT EXISTS idx_files_file_type ON files(file_type)')
+    c.execute('CREATE INDEX IF NOT EXISTS idx_files_mime_type ON files(mime_type)')
     
     # 3. Original lookup (existing + enhancement)
     c.execute('CREATE INDEX IF NOT EXISTS idx_files_hash_original ON files(hash, is_original)')
@@ -333,6 +345,16 @@ def process_file(args_tuple):
     try:
         file_size = filepath.stat().st_size
         file_hash, actual_size = sha256_file(filepath)
+        
+        # Capture enriched metadata
+        meta = get_file_metadata(filepath)
+        # Fallback if error (though unlikely here since we just stat'd it)
+        if "error" in meta:
+             # Basic fallback
+             meta = {
+                 "mtime": None, "ctime": None, "atime": None, 
+                 "mime_type": None, "file_type": "Unknown"
+             }
 
         # Check if this exact file path already exists in the database
         c.execute("SELECT id FROM files WHERE drive_name = ? AND file_path = ?", (drive_name, file_path))
@@ -350,9 +372,10 @@ def process_file(args_tuple):
             if scan_only:
                 # In scan-only mode, just record the location
                 c.execute(
-                    "INSERT OR IGNORE INTO files (hash, size, drive_name, file_path, upload_path, is_original, created_at) "
-                    "VALUES (?, ?, ?, ?, NULL, 0, ?)",
-                    (file_hash, actual_size, drive_name, file_path, datetime.now(timezone.utc).isoformat())
+                    "INSERT OR IGNORE INTO files (hash, size, drive_name, file_path, upload_path, is_original, created_at, file_mtime, file_ctime, file_atime, mime_type, file_type) "
+                    "VALUES (?, ?, ?, ?, NULL, 0, ?, ?, ?, ?, ?, ?)",
+                    (file_hash, actual_size, drive_name, file_path, datetime.now(timezone.utc).isoformat(),
+                     meta['mtime'], meta['ctime'], meta['atime'], meta['mime_type'], meta['file_type'])
                 )
                 conn.commit()
                 return "duplicate_recorded", filepath
@@ -364,9 +387,10 @@ def process_file(args_tuple):
             # Check if pointer already exists
             if b2.file_exists(pointer_remote_path):
                 c.execute(
-                    "INSERT OR IGNORE INTO files (hash, size, drive_name, file_path, upload_path, is_original, created_at) "
-                    "VALUES (?, ?, ?, ?, NULL, 0, ?)",
-                    (file_hash, actual_size, drive_name, file_path, datetime.now(timezone.utc).isoformat())
+                    "INSERT OR IGNORE INTO files (hash, size, drive_name, file_path, upload_path, is_original, created_at, file_mtime, file_ctime, file_atime, mime_type, file_type) "
+                    "VALUES (?, ?, ?, ?, NULL, 0, ?, ?, ?, ?, ?, ?)",
+                    (file_hash, actual_size, drive_name, file_path, datetime.now(timezone.utc).isoformat(),
+                     meta['mtime'], meta['ctime'], meta['atime'], meta['mime_type'], meta['file_type'])
                 )
                 conn.commit()
                 return "pointer_exists", filepath
@@ -377,9 +401,10 @@ def process_file(args_tuple):
             # Upload pointer file
             b2.upload_bytes(pointer_content, pointer_remote_path)
             c.execute(
-                "INSERT OR IGNORE INTO files (hash, size, drive_name, file_path, upload_path, is_original, created_at) "
-                "VALUES (?, ?, ?, ?, NULL, 0, ?)",
-                (file_hash, actual_size, drive_name, file_path, datetime.now(timezone.utc).isoformat())
+                "INSERT OR IGNORE INTO files (hash, size, drive_name, file_path, upload_path, is_original, created_at, file_mtime, file_ctime, file_atime, mime_type, file_type) "
+                "VALUES (?, ?, ?, ?, NULL, 0, ?, ?, ?, ?, ?, ?)",
+                (file_hash, actual_size, drive_name, file_path, datetime.now(timezone.utc).isoformat(),
+                 meta['mtime'], meta['ctime'], meta['atime'], meta['mime_type'], meta['file_type'])
             )
             conn.commit()
             return "pointer_created", filepath
@@ -387,9 +412,10 @@ def process_file(args_tuple):
         # This is a new unique file
         if scan_only:
             c.execute(
-                "INSERT OR IGNORE INTO files (hash, size, drive_name, file_path, upload_path, is_original, created_at) "
-                "VALUES (?, ?, ?, ?, NULL, 1, ?)",
-                (file_hash, actual_size, drive_name, file_path, datetime.now(timezone.utc).isoformat())
+                "INSERT OR IGNORE INTO files (hash, size, drive_name, file_path, upload_path, is_original, created_at, file_mtime, file_ctime, file_atime, mime_type, file_type) "
+                "VALUES (?, ?, ?, ?, NULL, 1, ?, ?, ?, ?, ?, ?)",
+                (file_hash, actual_size, drive_name, file_path, datetime.now(timezone.utc).isoformat(),
+                 meta['mtime'], meta['ctime'], meta['atime'], meta['mime_type'], meta['file_type'])
             )
             conn.commit()
             return "scanned", filepath
@@ -397,9 +423,10 @@ def process_file(args_tuple):
             # Normal mode: check if already in bucket
             if b2.file_exists(remote_name):
                 c.execute(
-                    "INSERT OR IGNORE INTO files (hash, size, drive_name, file_path, upload_path, is_original, created_at) "
-                    "VALUES (?, ?, ?, ?, ?, 1, ?)",
-                    (file_hash, actual_size, drive_name, file_path, remote_name, datetime.now(timezone.utc).isoformat())
+                    "INSERT OR IGNORE INTO files (hash, size, drive_name, file_path, upload_path, is_original, created_at, file_mtime, file_ctime, file_atime, mime_type, file_type) "
+                    "VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?)",
+                    (file_hash, actual_size, drive_name, file_path, remote_name, datetime.now(timezone.utc).isoformat(),
+                     meta['mtime'], meta['ctime'], meta['atime'], meta['mime_type'], meta['file_type'])
                 )
                 conn.commit()
                 return "exists", filepath
@@ -411,9 +438,10 @@ def process_file(args_tuple):
             b2.upload_file(filepath, remote_name)
             
             c.execute(
-                "INSERT OR IGNORE INTO files (hash, size, drive_name, file_path, upload_path, is_original, created_at) "
-                "VALUES (?, ?, ?, ?, ?, 1, ?)",
-                (file_hash, actual_size, drive_name, file_path, remote_name, datetime.now(timezone.utc).isoformat())
+                "INSERT OR IGNORE INTO files (hash, size, drive_name, file_path, upload_path, is_original, created_at, file_mtime, file_ctime, file_atime, mime_type, file_type) "
+                "VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?)",
+                (file_hash, actual_size, drive_name, file_path, remote_name, datetime.now(timezone.utc).isoformat(),
+                 meta['mtime'], meta['ctime'], meta['atime'], meta['mime_type'], meta['file_type'])
             )
             
             # Check if row was actually inserted (race condition handling)
