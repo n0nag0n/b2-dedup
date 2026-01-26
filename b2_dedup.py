@@ -12,11 +12,13 @@ import argparse
 import json
 import threading
 import io
+import time
+import errno
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
 from datetime import datetime, timedelta, timezone
 from tqdm import tqdm
-from file_utils import get_file_metadata  # EXTENSION_CATEGORY_MAP could be imported if needed
+from file_utils import get_file_metadata
 
 # ================= CONFIG =================
 DB_PATH = Path.home() / "b2_dedup.db"
@@ -249,13 +251,22 @@ def count_files_with_progress(source_path: Path) -> int:
 
 
 def sha256_file(filepath: Path) -> tuple[str, int]:
-    sha256 = hashlib.sha256()
-    size = 0
-    with open(filepath, "rb") as f:
-        for chunk in iter(lambda: f.read(CHUNK_SIZE), b""):
-            sha256.update(chunk)
-            size += len(chunk)
-    return sha256.hexdigest(), size
+    """Hash a file using SHA256 with retries for transient IO errors."""
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            sha256 = hashlib.sha256()
+            size = 0
+            with open(filepath, "rb") as f:
+                for chunk in iter(lambda: f.read(CHUNK_SIZE), b""):
+                    sha256.update(chunk)
+                    size += len(chunk)
+            return sha256.hexdigest(), size
+        except OSError as e:
+            if e.errno == errno.EIO and attempt < max_retries - 1:
+                time.sleep(0.5 * (attempt + 1))
+                continue
+            raise
 
 
 def create_pointer_content(original_hash: str, original_path: str) -> bytes:
@@ -302,10 +313,21 @@ class B2Manager:
             return False
 
     def upload_file(self, local_path: Path, remote_path: str):
-        self.bucket.upload_local_file(
-            local_file=str(local_path),
-            file_name=remote_path
-        )
+        """Upload a local file to B2 with retries for transient IO errors."""
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                self.bucket.upload_local_file(
+                    local_file=str(local_path),
+                    file_name=remote_path
+                )
+                return
+            except OSError as e:
+                # Handle transient Input/output errors (e.g. from overloaded drives)
+                if e.errno == errno.EIO and attempt < max_retries - 1:
+                    time.sleep(1 * (attempt + 1))
+                    continue
+                raise
 
     def upload_bytes(self, content: bytes, remote_path: str, content_type: str = "application/json"):
         """Upload bytes directly to B2."""
@@ -512,10 +534,19 @@ def upload_action(args):
         for root, _, files in os.walk(source_path):
             for filename in files:
                 filepath = Path(root) / filename
+                
+                # Skip symlinks and non-regular files (pipes, devices, etc.)
+                # This prevents common EIO errors from special files.
+                if filepath.is_symlink():
+                    continue
+                if not filepath.is_file():
+                    continue
+                    
                 try:
                     rel_path = filepath.relative_to(source_path)
                     yield (filepath, rel_path, args.drive_name, args.scan_only, args.dry_run, b2)
-                except:
+                except Exception:
+                    # e.g. Path.relative_to might fail in very weird edge cases
                     pass
 
     with ThreadPoolExecutor(max_workers=args.workers) as executor:

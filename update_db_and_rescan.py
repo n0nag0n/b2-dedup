@@ -133,6 +133,8 @@ def main():
         for root, _, files in os.walk(source_path):
             for filename in files:
                 filepath = Path(root) / filename
+                if filepath.is_symlink() or not filepath.is_file():
+                    continue
                 try:
                     rel_path = filepath.relative_to(source_path)
                     yield (filepath, rel_path, args.drive_name)
