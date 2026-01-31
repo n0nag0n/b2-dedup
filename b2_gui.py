@@ -41,6 +41,38 @@ def format_size(size_bytes):
         size_bytes /= 1024
     return f"{size_bytes:.1f} PB"
 
+def resolve_selection_to_ids(selected_rows):
+    """Resolve selection to list of file IDs, expanding directories."""
+    ids = set()
+    conn = get_db_connection()
+    
+    # Handle direct files
+    # Check if 'is_dir' column exists
+    if 'is_dir' in selected_rows.columns:
+        files = selected_rows[~selected_rows['is_dir']]
+        dirs = selected_rows[selected_rows['is_dir']]
+    else:
+        files = selected_rows
+        dirs = pd.DataFrame()
+        
+    if not files.empty and 'id' in files.columns:
+        # Dropna() because fake rows might have None
+        ids.update(files['id'].dropna().astype(int).tolist())
+        
+    if not dirs.empty:
+        for _, row in dirs.iterrows():
+            d_drive = row['drive_name']
+            d_path = row['file_path']
+            if not d_path.endswith('/'): d_path += '/'
+            
+            # Find files in dir
+            q = "SELECT id FROM files WHERE drive_name = ? AND file_path LIKE ?"
+            found = conn.execute(q, (d_drive, f"{d_path}%")).fetchall()
+            ids.update(f[0] for f in found)
+            
+    conn.close()
+    return list(ids)
+
 def render_group_actions(selected_rows, group_map, current_group_name, key_suffix):
     """Render Group Add/Remove actions."""
     col_a, col_b = st.columns(2)
@@ -50,10 +82,11 @@ def render_group_actions(selected_rows, group_map, current_group_name, key_suffi
             cols = st.columns([2, 1])
             target_group = cols[0].selectbox("Add to Group", list(group_map.keys()), key=f"add_grp_{key_suffix}")
             if cols[1].button("Add", key=f"btn_add_{key_suffix}"):
+                all_ids = resolve_selection_to_ids(selected_rows)
                 conn = get_db_connection()
                 gid = group_map[target_group]
                 count = 0
-                for fid in selected_rows['id']:
+                for fid in all_ids:
                     try:
                         conn.execute("INSERT INTO group_members (group_id, file_id, added_at) VALUES (?, ?, ?)",
                                     (gid, fid, datetime.now().isoformat()))
@@ -67,17 +100,19 @@ def render_group_actions(selected_rows, group_map, current_group_name, key_suffi
     with col_b:
         if current_group_name != "All Files":
             if st.button(f"Remove from '{current_group_name}'", key=f"btn_rem_{key_suffix}"):
-                conn = get_db_connection()
-                gid = group_map[current_group_name]
-                ids = tuple(selected_rows['id'].tolist())
-                if len(ids) == 1:
-                    conn.execute("DELETE FROM group_members WHERE group_id = ? AND file_id = ?", (gid, ids[0]))
-                else:
-                    conn.execute(f"DELETE FROM group_members WHERE group_id = ? AND file_id IN {ids}", (gid,))
-                conn.commit()
-                conn.close()
-                st.success("Removed files from group")
-                st.rerun()
+                all_ids = resolve_selection_to_ids(selected_rows)
+                if all_ids:
+                    conn = get_db_connection()
+                    gid = group_map[current_group_name]
+                    ids = tuple(all_ids)
+                    if len(ids) == 1:
+                        conn.execute("DELETE FROM group_members WHERE group_id = ? AND file_id = ?", (gid, ids[0]))
+                    else:
+                        conn.execute(f"DELETE FROM group_members WHERE group_id = ? AND file_id IN {ids}", (gid,))
+                    conn.commit()
+                    conn.close()
+                    st.success("Removed files from group")
+                    st.rerun()
 
 def render_restore_ui(selected_rows, key_suffix):
     """Render Restore/Download UI."""
@@ -97,11 +132,16 @@ def render_restore_ui(selected_rows, key_suffix):
         try:
             b2 = b2_dedup.B2Manager(bucket_name)
             dest_path = Path(restore_dest)
-            total = len(selected_rows)
+            
+            all_ids = resolve_selection_to_ids(selected_rows)
+            total = len(all_ids)
             done = 0
-            for idx, row in selected_rows.iterrows():
+            
+            my_bar = st.progress(0, text=f"Restoring 0/{total}...")
+            
+            for fid in all_ids:
                 conn = get_db_connection()
-                file_rec = conn.execute("SELECT hash, is_original, upload_path, drive_name, file_path FROM files WHERE id = ?", (row['id'],)).fetchone()
+                file_rec = conn.execute("SELECT hash, is_original, upload_path, drive_name, file_path FROM files WHERE id = ?", (fid,)).fetchone()
                 conn.close()
                 if not file_rec: continue
                 
@@ -136,6 +176,18 @@ with st.sidebar:
     conn.close()
     
     selected_drive = st.selectbox("Drive", ["All Drives"] + drives)
+    
+    # 2. File Type Filter
+    try:
+        conn = get_db_connection()
+        # Some DBs might not have file_type column if old, handle gracefully
+        types = pd.read_sql("SELECT DISTINCT file_type FROM files ORDER BY file_type", conn)['file_type'].tolist()
+        conn.close()
+        # Filter None/Empty
+        types = [t for t in types if t]
+        selected_file_type = st.selectbox("File Type", ["All Types"] + types)
+    except:
+        selected_file_type = "All Types"
     
     # 2. Groups Filter
     conn = get_db_connection()
@@ -245,27 +297,13 @@ with tab_browse:
         conn.close()
         
         # Display Directories
-        if dirs:
-            st.markdown("### Folders")
-            # Grid layout for folders
-            cols = st.columns(4)
-            for i, d in enumerate(dirs):
-                with cols[i % 4]:
-                    if st.button(f"📁 {d}", key=f"dir_{d}"):
-                        st.session_state.browse_path = f"{current_prefix}{d}"
-                        st.rerun()
-            st.divider()
-
-        # 2. Get Files in current dir (Simple Query)
-        st.markdown("### Files")
+        # Display Directories AND Files
         
-        # Query: Start with prefix, but exclude anything with another slash after prefix
-        # GLOB is good for this: "prefix*" but NOT "prefix*/*"
-        # Or standard SQL: LIKE prefix% AND NOT LIKE prefix%/% 
-        
+        # files query
         file_query = """
             SELECT 
-                f.id, f.drive_name, f.file_path, f.size, f.created_at, f.is_original
+                f.id, f.drive_name, f.file_path, f.size, f.created_at, f.is_original, 
+                f.file_type, f.mime_type
             FROM files f
             WHERE f.drive_name = ? 
             AND f.file_path LIKE ?
@@ -285,40 +323,108 @@ with tab_browse:
         f_df = pd.read_sql(file_query + f" ORDER BY f.file_path LIMIT {ROWS_PER_PAGE} OFFSET {browse_offset}", conn, params=f_params)
         conn.close()
         
+        # Prepare Dataframes
+        combined_df = pd.DataFrame()
+
+        # 1. Directories (Show only on Page 1 to avoid confusion or Duplication?)
+        # Let's show them on Page 1.
+        if st.session_state.browse_page == 1 and dirs:
+            dirs_data = []
+            for d in dirs:
+                dirs_data.append({
+                    'selected': False,
+                    'is_dir': True,
+                    'type_icon': '📁',
+                    'name': d,
+                    'size_fmt': '-',
+                    'created_at': '-',
+                    'file_type': 'Folder',
+                    'mime_type': '',
+                    'id': -1, # placeholder
+                    'file_path': f"{current_prefix}{d}",
+                    'drive_name': selected_drive
+                })
+            dirs_df = pd.DataFrame(dirs_data)
+        else:
+            dirs_df = pd.DataFrame()
+            
+        # 2. Files
         if not f_df.empty:
+            f_df['is_dir'] = False
+            f_df['type_icon'] = '📄'
             f_df['size_fmt'] = f_df['size'].apply(format_size)
             f_df['name'] = f_df['file_path'].apply(lambda x: x[len(current_prefix):])
             f_df['selected'] = False
+            # Normalize columns
+            files_df = f_df
+        else:
+            files_df = pd.DataFrame()
             
-            # Reorder columns
-            f_display = f_df[['selected', 'name', 'size_fmt', 'created_at', 'is_original', 'id', 'file_path', 'drive_name', 'size']]
+        # Combine
+        combined_df = pd.concat([dirs_df, files_df], ignore_index=True)
+        
+        if not combined_df.empty:
             
-            edited_f_df = st.data_editor(
-                f_display,
-                column_config={
-                    "selected": st.column_config.CheckboxColumn("Select", default=False),
-                    "name": "Filename",
-                    "size_fmt": "Size",
-                    "id": None, "file_path": None, "drive_name": None, "size": None
-                },
-                hide_index=True,
-                width='stretch',
-                key=f"browse_editor_{st.session_state.browse_path}_{st.session_state.browse_page}"
-            )
+            # Reorder columns and render manually
+            # Headers
+            st.divider()
+            h_cols = st.columns([0.5, 0.5, 4, 1.5, 1.5, 2])
+            h_cols[0].markdown("**✔**")
+            h_cols[2].markdown("**Name**")
+            h_cols[3].markdown("**Size**")
+            h_cols[4].markdown("**Type**")
+            h_cols[5].markdown("**Date**")
             
-            # Re-use action logic?
-            # We can extract selected IDs and run the same logic.
-            # Ideally Refactor "Action Bar" to a function.
+            selected_rows_data = []
             
-            browse_selected = edited_f_df[edited_f_df['selected']]
-            if not browse_selected.empty:
+            # Manual Row Rendering
+            for idx, row in combined_df.iterrows():
+                # Unique key for widgets
+                row_key_base = f"row_{row['drive_name']}_{row['file_path']}"
+                
+                cols = st.columns([0.5, 0.5, 4, 1.5, 1.5, 2])
+                
+                # 1. Checkbox
+                checked = cols[0].checkbox("select", key=f"sel_{row_key_base}", label_visibility="collapsed")
+                if checked:
+                    selected_rows_data.append(row)
+                
+                # 2. Icon
+                cols[1].write(row['type_icon'])
+                
+                # 3. Name (Button for Dir, Text for File)
+                if row['is_dir']:
+                    # Use a button for navigation
+                    if cols[2].button(row['name'], key=f"nav_{row_key_base}"):
+                        st.session_state.browse_path = row['file_path']
+                        st.session_state.browse_page = 1
+                        st.rerun()
+                else:
+                    cols[2].write(row['name'])
+                    
+                # 4. Size
+                cols[3].write(row['size_fmt'])
+                
+                # 5. Type
+                cols[4].write(row['file_type'] if row['file_type'] else "")
+                
+                # 6. Date
+                d_str = row['created_at'].split('T')[0] if row['created_at'] else ""
+                cols[5].write(d_str)
+
+            # Reconstruct selection DataFrame
+            if selected_rows_data:
+                browse_selected = pd.DataFrame(selected_rows_data)
+                
                 st.divider()
-                st.info(f"{len(browse_selected)} files selected")
+                st.info(f"{len(browse_selected)} items selected")
                 
                 # Render Actions
                 render_group_actions(browse_selected, group_map, "All Files", "browse")
                 st.divider()
                 render_restore_ui(browse_selected, "browse")
+            else:
+                browse_selected = pd.DataFrame()
 
             # Pagination
             col_bp1, col_bp2, col_bp3 = st.columns([1, 2, 1])
@@ -347,7 +453,11 @@ with tab_search:
         search_query = st.text_input("Search files (Path/Name)", placeholder="e.g. DCIM or .jpg")
 
     with col2:
-        sort_order = st.selectbox("Sort by", ["Date (Newest)", "Date (Oldest)", "Size (Largest)", "Size (Smallest)"])
+        sort_order = st.selectbox("Sort by", [
+            "Date (Newest)", "Date (Oldest)", 
+            "Size (Largest)", "Size (Smallest)",
+            "Type (A-Z)", "Type (Z-A)"
+        ])
 
     # Pagination state
     if 'page' not in st.session_state:
@@ -364,6 +474,8 @@ with tab_search:
             f.size, 
             f.created_at, 
             f.is_original,
+            f.file_type,
+            f.mime_type,
             EXISTS(SELECT 1 FROM group_members gm WHERE gm.file_id = f.id) as has_group
         FROM files f
     """
@@ -374,6 +486,11 @@ with tab_search:
     if selected_drive != "All Drives":
         conditions.append("f.drive_name = ?")
         params.append(selected_drive)
+
+    # Filter: File Type
+    if selected_file_type != "All Types":
+        conditions.append("f.file_type = ?")
+        params.append(selected_file_type)
 
     # Filter: Group
     if selected_group_name != "All Files":
@@ -424,7 +541,9 @@ with tab_search:
         "Date (Newest)": "f.created_at DESC",
         "Date (Oldest)": "f.created_at ASC",
         "Size (Largest)": "f.size DESC",
-        "Size (Smallest)": "f.size ASC"
+        "Size (Smallest)": "f.size ASC",
+        "Type (A-Z)": "f.file_type ASC",
+        "Type (Z-A)": "f.file_type DESC"
     }
     base_query += f" ORDER BY {sort_map[sort_order]}"
 
@@ -456,6 +575,8 @@ with tab_search:
                 "size_fmt": "Size",
                 "created_at": "Datestamp",
                 "is_original": "Orig?",
+                "file_type": "Type",
+                "mime_type": "MIME",
                 "id": None, # Hide ID
                 "size": None, # Hide raw size
                 "has_group": None

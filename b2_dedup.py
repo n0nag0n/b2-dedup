@@ -488,8 +488,21 @@ def upload_action(args):
         print(f"Error: {source_path} is not a valid directory")
         return
 
+    # Determine root for relative paths
+    if args.drive_root:
+        drive_root = Path(args.drive_root).resolve()
+        try:
+            source_path.relative_to(drive_root)
+        except ValueError:
+            print(f"Error: Source {source_path} is not inside drive root {drive_root}")
+            return
+    else:
+        drive_root = source_path
+
     mode = "SCAN-ONLY" if args.scan_only else ("DRY-RUN" if args.dry_run else "FULL (upload)")
     print(f"Source:  {source_path}")
+    if args.drive_root:
+        print(f"Root:    {drive_root}")
     print(f"Bucket:  {args.bucket}")
     print(f"Drive:   {args.drive_name}/")
     print(f"Mode:    {mode}")
@@ -543,7 +556,7 @@ def upload_action(args):
                     continue
                     
                 try:
-                    rel_path = filepath.relative_to(source_path)
+                    rel_path = filepath.relative_to(drive_root)
                     yield (filepath, rel_path, args.drive_name, args.scan_only, args.dry_run, b2)
                 except Exception:
                     # e.g. Path.relative_to might fail in very weird edge cases
@@ -804,6 +817,9 @@ Examples:
   Upload files:
     %(prog)s upload /path/to/drive --drive-name MyDrive --bucket my-bucket
   
+  Upload subdirectory (preserving path):
+    %(prog)s upload /path/to/drive/Docs --drive-root /path/to/drive --drive-name MyDrive --bucket my-bucket
+
   Download files:
     %(prog)s download MyDrive/projects/ --dest /path/to/restore --bucket my-bucket
     
@@ -817,6 +833,7 @@ Examples:
     # Upload subcommand
     upload_parser = subparsers.add_parser("upload", help="Upload files to B2 with deduplication")
     upload_parser.add_argument("source", help="Path to the drive/folder to upload")
+    upload_parser.add_argument("--drive-root", help="Base directory for relative paths (e.g. if uploading a subdir)")
     upload_parser.add_argument("--drive-name", required=True, help="Root folder name in B2 (e.g. MasterDrive)")
     upload_parser.add_argument("--bucket", required=True, help="B2 bucket name")
     upload_parser.add_argument("--scan-only", action="store_true", help="Only build hash database, no upload")

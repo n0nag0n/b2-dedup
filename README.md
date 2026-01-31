@@ -82,6 +82,7 @@ python b2_dedup.py <action> [arguments] [flags]
 | :--- | :--- |
 | `upload` | Upload files to B2 with deduplication and pointer file creation |
 | `download` | Download files from B2 with automatic pointer resolution |
+| `serve` | Launch the Streamlit-based Web UI for browsing and searching files |
 
 ---
 
@@ -96,6 +97,7 @@ python b2_dedup.py upload [SOURCE] --drive-name [DRIVE] --bucket [BUCKET] [FLAGS
 | Flag | Description |
 | :--- | :--- |
 | `source` | The local path you want to back up. |
+| `--drive-root` | Optional. Base directory for relative paths (useful for uploading a subdirectory while keeping its place in the drive structure). |
 | `--drive-name` | **Required.** The root directory name in B2 where files will be placed. |
 | `--bucket` | **Required.** The name of your Backblaze B2 bucket. |
 | `--scan-only` | Hash files and add them to the local DB, but do not upload. |
@@ -129,6 +131,13 @@ If you have a fast connection, you can increase the number of worker threads.
 ```bash
 python b2_dedup.py upload /mnt/my_drive --drive-name MyBackup --bucket my-safe-storage --workers 25
 ```
+
+#### 5. Uploading a Subdirectory (Preserving Path)
+If you only want to upload a specific folder, but want it stored in its correct relative location within the "drive":
+```bash
+python b2_dedup.py upload /mnt/my_drive/Documents --drive-root /mnt/my_drive --drive-name MyBackup --bucket my-safe-storage
+```
+This will scan only `/Documents`, but store files as `MyBackup/Documents/...` instead of flattening them into `MyBackup/...`.
 
 ---
 
@@ -165,6 +174,28 @@ python b2_dedup.py download MyBackup/projects/wordpress-site/ --dest /restore/wo
 ```bash
 python b2_dedup.py download MyBackup/ --dest /restore/test --bucket my-safe-storage --dry-run
 ```
+
+---
+
+## Serve Command (Web UI)
+
+The `serve` command launches a modern, browser-based interface for exploring your backup database.
+
+```bash
+python b2_dedup.py serve [--port PORT]
+```
+
+### Features:
+- 📂 **File Browser:** Navigate through your drives and folders as they appear in B2.
+- 🔍 **Powerful Search:** Instant search across all drives using SQLite FTS (Full Text Search).
+- 📊 **Statistics:** View total storage usage, file counts, and deduplication efficiency.
+- 📋 **Metadata View:** See file sizes, upload dates, and original paths for duplicates.
+
+### Example:
+```bash
+python b2_dedup.py serve --port 8501
+```
+Once running, open your browser to `http://localhost:8501`.
 
 ---
 
