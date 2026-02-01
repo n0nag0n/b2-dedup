@@ -14,6 +14,8 @@ import threading
 import io
 import time
 import errno
+import re
+import urllib.parse
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
 from datetime import datetime, timedelta, timezone
@@ -281,6 +283,18 @@ def create_pointer_content(original_hash: str, original_path: str) -> bytes:
     return json.dumps(pointer, indent=2).encode('utf-8')
 
 
+def sanitize_b2_path(path_str: str) -> str:
+    """
+    Sanitize a path for B2 by URL-encoding characters that B2 forbids 
+    (control characters 0x00-0x1F and 0x7F).
+    """
+    return re.sub(
+        r'[\x00-\x1f\x7f]', 
+        lambda m: f'%{ord(m.group(0)):02X}', 
+        path_str
+    )
+
+
 class B2Manager:
     def __init__(self, bucket_name: str):
         from b2sdk.v2 import SqliteAccountInfo, InMemoryAccountInfo, B2Api
@@ -361,7 +375,7 @@ def process_file(args_tuple):
     conn = get_thread_connection()
     c = conn.cursor()
     
-    remote_name = f"{drive_name}/{rel_path.as_posix()}"
+    remote_name = sanitize_b2_path(f"{drive_name}/{rel_path.as_posix()}")
     file_path = rel_path.as_posix()  # Relative path from drive root
 
     try:
@@ -652,7 +666,8 @@ def download_action(args):
     b2 = B2Manager(args.bucket)
     
     # Normalize remote path (ensure it ends with / for prefix matching, unless it's empty)
-    remote_prefix = args.remote_path.rstrip('/') + '/' if args.remote_path else ""
+    sanitized_remote = sanitize_b2_path(args.remote_path)
+    remote_prefix = sanitized_remote.rstrip('/') + '/' if sanitized_remote else ""
     
     # Count files first
     print("Listing files...")
@@ -682,6 +697,9 @@ def download_action(args):
             rel_path = remote_name[len(remote_prefix):]
         else:
             rel_path = remote_name
+        
+        # Unquote to restore original filename characters (e.g. control chars, %)
+        rel_path = urllib.parse.unquote(rel_path)
         
         try:
             if remote_name.endswith(POINTER_EXTENSION):

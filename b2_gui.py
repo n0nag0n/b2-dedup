@@ -7,6 +7,7 @@ from pathlib import Path
 from datetime import datetime
 import json
 import subprocess
+import urllib.parse
 
 # Import config from main script
 # Ensure current directory is in path
@@ -146,17 +147,28 @@ def render_restore_ui(selected_rows, key_suffix):
                 if not file_rec: continue
                 
                 f_hash, is_orig, up_path, d_name, f_path = file_rec
-                remote_path = f"{d_name}/{f_path}"
+                
+                # Reconstruct remote path with sanitization for B2
+                remote_path = b2_dedup.sanitize_b2_path(f"{d_name}/{f_path}")
                 local_path = dest_path / f_path
                 
                 if is_orig:
-                    b2.download_file_on_path(remote_path, local_path) if hasattr(b2, 'download_file_on_path') else b2.download_file_to_path(remote_path, local_path)
+                    # Use stored upload_path if available, otherwise sanitized reconstructed path
+                    final_remote_path = up_path if up_path else remote_path
+                    if hasattr(b2, 'download_file_on_path'):
+                        b2.download_file_on_path(final_remote_path, local_path)
+                    else:
+                        b2.download_file_to_path(final_remote_path, local_path)
                 else:
+                    # Resolve duplicate from pointer file
                     try:
-                        ptr_content = b2.download_file_content(remote_path + ".b2ptr")
+                        ptr_path = remote_path + b2_dedup.POINTER_EXTENSION
+                        ptr_content = b2.download_file_content(ptr_path)
                         pointer = json.loads(ptr_content)
+                        # original_path in pointer is already the correct B2 path
                         b2.download_file_to_path(pointer['original_path'], local_path)
-                    except:
+                    except Exception as e:
+                        # Log error for this file
                         pass
                 done += 1
                 my_bar.progress(done / total, text=f"Restored {done}/{total}")
