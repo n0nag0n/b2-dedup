@@ -4,7 +4,7 @@ import pandas as pd
 import os
 import sys
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timedelta
 import json
 import subprocess
 import urllib.parse
@@ -34,6 +34,24 @@ def get_db_connection():
     """Get a connection to the SQLite database."""
     return sqlite3.connect(b2_dedup.DB_PATH)
 
+GUI_CONFIG_PATH = Path.home() / ".b2_gui_config.json"
+
+def load_gui_config():
+    if GUI_CONFIG_PATH.exists():
+        try:
+            with open(GUI_CONFIG_PATH, 'r') as f:
+                return json.load(f)
+        except:
+            pass
+    return {}
+
+def save_gui_config(config):
+    try:
+        with open(GUI_CONFIG_PATH, 'w') as f:
+            json.dump(config, f)
+    except:
+        pass
+
 def format_size(size_bytes):
     """Format bytes to human readable string."""
     for unit in ['B', 'KB', 'MB', 'GB', 'TB']:
@@ -47,29 +65,42 @@ def resolve_selection_to_ids(selected_rows):
     ids = set()
     conn = get_db_connection()
     
-    # Handle direct files
-    # Check if 'is_dir' column exists
-    if 'is_dir' in selected_rows.columns:
-        files = selected_rows[~selected_rows['is_dir']]
-        dirs = selected_rows[selected_rows['is_dir']]
-    else:
-        files = selected_rows
-        dirs = pd.DataFrame()
-        
-    if not files.empty and 'id' in files.columns:
-        # Dropna() because fake rows might have None
-        ids.update(files['id'].dropna().astype(int).tolist())
-        
-    if not dirs.empty:
-        for _, row in dirs.iterrows():
-            d_drive = row['drive_name']
-            d_path = row['file_path']
-            if not d_path.endswith('/'): d_path += '/'
+    try:
+        # Handle direct files
+        # Check if 'is_dir' column exists
+        if 'is_dir' in selected_rows.columns:
+            # Explicitly cast to boolean to handle 0/1 integers matching boolean logic
+            is_dir_mask = selected_rows['is_dir'].fillna(False).astype(bool)
+            files = selected_rows[~is_dir_mask]
+            dirs = selected_rows[is_dir_mask]
+        else:
+            files = selected_rows
+            dirs = pd.DataFrame()
             
-            # Find files in dir
-            q = "SELECT id FROM files WHERE drive_name = ? AND file_path LIKE ?"
-            found = conn.execute(q, (d_drive, f"{d_path}%")).fetchall()
-            ids.update(f[0] for f in found)
+        if not files.empty and 'id' in files.columns:
+            # Dropna() because fake rows might have None
+            valid_ids = files['id'].dropna()
+            # Filter out placeholder ids (-1) just in case
+            valid_ids = valid_ids[valid_ids != -1]
+            ids.update(valid_ids.astype(int).tolist())
+            
+        if not dirs.empty:
+            for _, row in dirs.iterrows():
+                d_drive = row.get('drive_name')
+                d_path = row.get('file_path')
+                
+                if not d_drive or not d_path:
+                    continue
+                    
+                if not d_path.endswith('/'): d_path += '/'
+                
+                # Find files in dir
+                q = "SELECT id FROM files WHERE drive_name = ? AND file_path LIKE ?"
+                found = conn.execute(q, (d_drive, f"{d_path}%")).fetchall()
+                if found:
+                    ids.update(f[0] for f in found)
+    except Exception as e:
+        st.error(f"Error resolving selection: {e}")
             
     conn.close()
     return list(ids)
@@ -84,19 +115,22 @@ def render_group_actions(selected_rows, group_map, current_group_name, key_suffi
             target_group = cols[0].selectbox("Add to Group", list(group_map.keys()), key=f"add_grp_{key_suffix}")
             if cols[1].button("Add", key=f"btn_add_{key_suffix}"):
                 all_ids = resolve_selection_to_ids(selected_rows)
-                conn = get_db_connection()
-                gid = group_map[target_group]
-                count = 0
-                for fid in all_ids:
-                    try:
-                        conn.execute("INSERT INTO group_members (group_id, file_id, added_at) VALUES (?, ?, ?)",
-                                    (gid, fid, datetime.now().isoformat()))
-                        count += 1
-                    except sqlite3.IntegrityError:
-                        pass
-                conn.commit()
-                conn.close()
-                st.success(f"Added {count} files to '{target_group}'")
+                if not all_ids:
+                    st.warning("No files found in selection.")
+                else:
+                    conn = get_db_connection()
+                    gid = group_map[target_group]
+                    count = 0
+                    for fid in all_ids:
+                        try:
+                            conn.execute("INSERT INTO group_members (group_id, file_id, added_at) VALUES (?, ?, ?)",
+                                        (gid, fid, datetime.now().isoformat()))
+                            count += 1
+                        except sqlite3.IntegrityError:
+                            pass
+                    conn.commit()
+                    conn.close()
+                    st.success(f"Added {count} files to '{target_group}'")
 
     with col_b:
         if current_group_name != "All Files":
@@ -120,13 +154,24 @@ def render_restore_ui(selected_rows, key_suffix):
     st.markdown("### Restore / Download")
     cols = st.columns([3, 2, 1])
     
-    restore_dest = cols[0].text_input("Restore to (Local Path)", value=str(Path.home() / "Downloads"), key=f"dest_{key_suffix}")
-    bucket_name = cols[1].text_input("B2 Bucket Name", key=f"buck_{key_suffix}")
+    # Load config defaults
+    config = load_gui_config()
+    default_bucket = config.get("bucket_name", "")
+    default_dest = config.get("restore_dest", str(Path.home() / "Downloads"))
+    
+    restore_dest = cols[0].text_input("Restore to (Local Path)", value=default_dest, key=f"dest_{key_suffix}")
+    bucket_name = cols[1].text_input("B2 Bucket Name", value=default_bucket, key=f"buck_{key_suffix}")
     
     if cols[2].button("Restore", key=f"btn_rest_{key_suffix}"):
         if not bucket_name:
             st.error("Bucket Name required")
             return
+
+        # Save config
+        save_gui_config({
+            "bucket_name": bucket_name,
+            "restore_dest": restore_dest
+        })
 
         progress_text = "Restoring files..."
         my_bar = st.progress(0, text=progress_text)
@@ -136,9 +181,14 @@ def render_restore_ui(selected_rows, key_suffix):
             
             all_ids = resolve_selection_to_ids(selected_rows)
             total = len(all_ids)
-            done = 0
             
-            my_bar = st.progress(0, text=f"Restoring 0/{total}...")
+            if total == 0:
+                st.warning("No files found to restore. If you selected a folder, ensure it is not empty.")
+                my_bar.empty()
+                return
+
+            done = 0
+            my_bar.progress(0, text=f"Restoring 0/{total}...")
             
             for fid in all_ids:
                 conn = get_db_connection()
@@ -169,7 +219,7 @@ def render_restore_ui(selected_rows, key_suffix):
                         b2.download_file_to_path(pointer['original_path'], local_path)
                     except Exception as e:
                         # Log error for this file
-                        pass
+                        st.error(f"Failed to restore {f_path}: {e}")
                 done += 1
                 my_bar.progress(done / total, text=f"Restored {done}/{total}")
             st.success(f"Restored {done} files")
@@ -189,17 +239,7 @@ with st.sidebar:
     
     selected_drive = st.selectbox("Drive", ["All Drives"] + drives)
     
-    # 2. File Type Filter
-    try:
-        conn = get_db_connection()
-        # Some DBs might not have file_type column if old, handle gracefully
-        types = pd.read_sql("SELECT DISTINCT file_type FROM files ORDER BY file_type", conn)['file_type'].tolist()
-        conn.close()
-        # Filter None/Empty
-        types = [t for t in types if t]
-        selected_file_type = st.selectbox("File Type", ["All Types"] + types)
-    except:
-        selected_file_type = "All Types"
+
     
     # 2. Groups Filter
     conn = get_db_connection()
@@ -315,7 +355,7 @@ with tab_browse:
         file_query = """
             SELECT 
                 f.id, f.drive_name, f.file_path, f.size, f.created_at, f.is_original, 
-                f.file_type, f.mime_type
+                f.file_type, f.mime_type, f.file_mtime, f.file_atime, f.file_ctime
             FROM files f
             WHERE f.drive_name = ? 
             AND f.file_path LIKE ?
@@ -385,7 +425,7 @@ with tab_browse:
             h_cols[2].markdown("**Name**")
             h_cols[3].markdown("**Size**")
             h_cols[4].markdown("**Type**")
-            h_cols[5].markdown("**Date**")
+            h_cols[5].markdown("**Modified**")
             
             selected_rows_data = []
             
@@ -420,9 +460,14 @@ with tab_browse:
                 # 5. Type
                 cols[4].write(row['file_type'] if row['file_type'] else "")
                 
-                # 6. Date
-                d_str = row['created_at'].split('T')[0] if row['created_at'] else ""
-                cols[5].write(d_str)
+                # 6. Date (Modified) with Tooltip
+                m_date = row.get('file_mtime')
+                if pd.isna(m_date): m_date = None
+                display_date = m_date.split('T')[0] if m_date else "-"
+                
+                # Build tooltip
+                tt = f"Modified: {m_date if m_date else 'Unknown'}\nAdded: {row.get('created_at', '-')}\nAccessed: {row.get('file_atime', '-')}\nCreated: {row.get('file_ctime', '-')}"
+                cols[5].markdown(f'<span title="{tt}">{display_date}</span>', unsafe_allow_html=True)
 
             # Reconstruct selection DataFrame
             if selected_rows_data:
@@ -466,10 +511,38 @@ with tab_search:
 
     with col2:
         sort_order = st.selectbox("Sort by", [
-            "Date (Newest)", "Date (Oldest)", 
+            "Date Modified (Newest)", "Date Modified (Oldest)",
+            "Date Added (Newest)", "Date Added (Oldest)",
             "Size (Largest)", "Size (Smallest)",
             "Type (A-Z)", "Type (Z-A)"
         ])
+
+    with st.expander("Advanced Filters"):
+        # Get dynamic file types
+        try:
+            conn = get_db_connection()
+            types = pd.read_sql("SELECT DISTINCT file_type FROM files ORDER BY file_type", conn)['file_type'].tolist()
+            conn.close()
+            types = [t for t in types if t]
+        except:
+            types = []
+
+        af_col1, af_col2, af_col3, af_col4 = st.columns(4)
+        with af_col1:
+            filter_origin = st.selectbox("Original / Duplicate", ["All", "Originals Only", "Duplicates Only"])
+        with af_col2:
+            filter_date_col = st.selectbox("Filter Date By", ["Date Added", "File Modified"])
+        with af_col3:
+            filter_period = st.selectbox("Time Period", ["All Time", "Last 24 Hours", "Last 7 Days", "Last 30 Days", "Custom Range"])
+        with af_col4:
+            filter_file_type = st.selectbox("File Category", ["All Types"] + types)
+        
+        filter_date_range = []
+        if filter_period == "Custom Range":
+            filter_date_range = st.date_input("Select Date Range", [])
+            
+        st.caption("Extensions Filter")
+        filter_ext = st.text_input("File Extensions (comma separated)", placeholder="e.g. jpg, png, pdf")
 
     # Pagination state
     if 'page' not in st.session_state:
@@ -488,6 +561,9 @@ with tab_search:
             f.is_original,
             f.file_type,
             f.mime_type,
+            f.file_mtime,
+            f.file_atime,
+            f.file_ctime,
             EXISTS(SELECT 1 FROM group_members gm WHERE gm.file_id = f.id) as has_group
         FROM files f
     """
@@ -500,9 +576,9 @@ with tab_search:
         params.append(selected_drive)
 
     # Filter: File Type
-    if selected_file_type != "All Types":
+    if filter_file_type != "All Types":
         conditions.append("f.file_type = ?")
-        params.append(selected_file_type)
+        params.append(filter_file_type)
 
     # Filter: Group
     if selected_group_name != "All Files":
@@ -539,6 +615,50 @@ with tab_search:
             conditions.append("f.file_path LIKE ?")
             params.append(f"%{search_query}%")
 
+    # Filter: Origin
+    if filter_origin == "Originals Only":
+        conditions.append("f.is_original = 1")
+    elif filter_origin == "Duplicates Only":
+        conditions.append("f.is_original = 0")
+
+    # Filter: Date
+    date_col = "f.created_at" if filter_date_col == "Date Added" else "f.file_mtime"
+    if filter_period != "All Time":
+        now = datetime.now()
+        if filter_period == "Last 24 Hours":
+            cutoff = (now - timedelta(days=1)).isoformat()
+            conditions.append(f"{date_col} >= ?")
+            params.append(cutoff)
+        elif filter_period == "Last 7 Days":
+            cutoff = (now - timedelta(days=7)).isoformat()
+            conditions.append(f"{date_col} >= ?")
+            params.append(cutoff)
+        elif filter_period == "Last 30 Days":
+            cutoff = (now - timedelta(days=30)).isoformat()
+            conditions.append(f"{date_col} >= ?")
+            params.append(cutoff)
+        elif filter_period == "Custom Range" and len(filter_date_range) == 2:
+            start_date, end_date = filter_date_range
+            # date_input returns date objects, need to ensure comparison works with text ISO strings
+            # We'll use ISO format start and end of day
+            s_iso = start_date.isoformat()
+            e_iso = end_date.isoformat() + "T23:59:59"
+            conditions.append(f"{date_col} >= ? AND {date_col} <= ?")
+            params.append(s_iso)
+            params.append(e_iso)
+
+    # Filter: Extensions
+    if filter_ext:
+        # Split by comma
+        exts = [e.strip().lower().lstrip('.') for e in filter_ext.split(',') if e.strip()]
+        if exts:
+            # OR logic for extensions
+            ext_conditions = []
+            for e in exts:
+                ext_conditions.append("f.file_path LIKE ?")
+                params.append(f"%.{e}")
+            conditions.append(f"({' OR '.join(ext_conditions)})")
+
     if conditions:
         base_query += " WHERE " + " AND ".join(conditions)
 
@@ -550,8 +670,10 @@ with tab_search:
 
     # Sorting
     sort_map = {
-        "Date (Newest)": "f.created_at DESC",
-        "Date (Oldest)": "f.created_at ASC",
+        "Date Modified (Newest)": "f.file_mtime DESC",
+        "Date Modified (Oldest)": "f.file_mtime ASC",
+        "Date Added (Newest)": "f.created_at DESC",
+        "Date Added (Oldest)": "f.created_at ASC",
         "Size (Largest)": "f.size DESC",
         "Size (Smallest)": "f.size ASC",
         "Type (A-Z)": "f.file_type ASC",
@@ -577,15 +699,28 @@ with tab_search:
         df['size_fmt'] = df['size'].apply(format_size)
         df['selected'] = False
         
+        # Convert timestamps to proper datetime objects for DatetimeColumn
+        for col in ['file_mtime', 'created_at', 'file_atime', 'file_ctime']:
+            if col in df.columns:
+                df[col] = pd.to_datetime(df[col], errors='coerce')
+
         # Use data editor for selection
+        # Reorder columns to put checkbox first
+        cols_order = ['selected', 'drive_name', 'file_path', 'size_fmt', 'file_mtime', 'created_at', 'file_atime', 'file_type', 'is_original', 'mime_type', 'file_ctime']
+        # Filter to only existing columns
+        cols_order = [c for c in cols_order if c in df.columns]
+        
         edited_df = st.data_editor(
-            df,
+            df[cols_order],
             column_config={
                 "selected": st.column_config.CheckboxColumn("Select", default=False),
                 "drive_name": "Drive",
                 "file_path": "Path",
                 "size_fmt": "Size",
-                "created_at": "Datestamp",
+                "file_mtime": st.column_config.DatetimeColumn("Modified", format="YYYY-MM-DD HH:mm"),
+                "created_at": st.column_config.DatetimeColumn("Added", format="YYYY-MM-DD HH:mm"),
+                "file_atime": st.column_config.DatetimeColumn("Accessed", format="YYYY-MM-DD HH:mm"),
+                "file_ctime": st.column_config.DatetimeColumn("Created", format="YYYY-MM-DD HH:mm"),
                 "is_original": "Orig?",
                 "file_type": "Type",
                 "mime_type": "MIME",
@@ -595,6 +730,7 @@ with tab_search:
             },
             hide_index=True,
             width='stretch',
+            disabled=[c for c in cols_order if c != "selected"],
             key=f"editor_{st.session_state.page}" # Reset editor on page change
         )
         
