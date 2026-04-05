@@ -29,9 +29,10 @@ The `serve` command shells out to `streamlit run b2_gui.py`.
 
 ## Important constants / paths
 
-- **Database:** `~/b2_dedup.db` (`b2_dedup.DB_PATH`)
-- **File count cache:** `~/.b2_dedup_cache.json`
-- **GUI config** (bucket name, etc.): `~/.b2_gui_config.json`
+- **Data directory:** `./data/` relative to the script (`b2_dedup._DATA_DIR`); override with `B2_DEDUP_DATA_DIR` env var
+- **Database:** `data/b2_dedup.db` (`b2_dedup.DB_PATH`)
+- **File count cache:** `data/.b2_dedup_cache.json`
+- **GUI config** (bucket name, etc.): `data/b2_gui_config.json`
   - `bucket_name` — B2 bucket name
   - `db_backup_local_mtime` — float mtime of local DB at time of last backup (used to detect local changes)
   - `db_backup_local_size` — int size of local DB at time of last backup
@@ -42,7 +43,18 @@ The `serve` command shells out to `streamlit run b2_gui.py`.
 
 ## B2 credentials
 
-Tried in order: stored B2 CLI credentials (`~/.b2/account_info` via `SqliteAccountInfo`) → env vars `B2_KEY_ID` / `B2_APPLICATION_KEY`. No hardcoded credentials anywhere.
+Tried in order: env vars `B2_KEY_ID` / `B2_APPLICATION_KEY` → stored b2sdk credentials via `SqliteAccountInfo` (checks `~/.b2_account_info` then `~/.config/b2/account_info`). Env vars take priority so Docker/CI works without a credential file. No hardcoded credentials anywhere.
+
+## Docker
+
+```bash
+cp .env.example .env   # fill in B2_KEY_ID and B2_APPLICATION_KEY
+docker compose up --build
+```
+
+- `./data/` is bind-mounted to `/app/data` in the container — DB and config persist on the host.
+- `.env` is in `.gitignore`; `.env.example` documents all variables.
+- `B2_DEDUP_DATA_DIR` is set to `/app/data` inside the container via the Dockerfile.
 
 ## Database schema (SQLite, FTS5)
 

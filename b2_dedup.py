@@ -45,131 +45,13 @@ def get_thread_connection():
 
 
 def init_db():
-    """Initialize the database schema (run once from main thread)."""
+    """Initialize / migrate the database schema (run once from main thread)."""
+    from migrations.runner import run_migrations
     conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    
-    # Unified schema - files table with id primary key
-    c.execute('''
-        CREATE TABLE IF NOT EXISTS files (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            hash TEXT NOT NULL,
-            size INTEGER NOT NULL,
-            drive_name TEXT NOT NULL,
-            file_path TEXT NOT NULL,
-            upload_path TEXT,
-            is_original INTEGER DEFAULT 0,
-            created_at TEXT,
-            file_mtime TEXT,
-            file_ctime TEXT,
-            file_atime TEXT,
-            mime_type TEXT,
-            file_type TEXT,
-            UNIQUE(drive_name, file_path)
-        )
-    ''') # Keep compatible with existing setup
-
-    # Groups table for "serve" feature
-    c.execute('''
-        CREATE TABLE IF NOT EXISTS groups (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT NOT NULL UNIQUE,
-            created_at TEXT
-        )
-    ''')
-
-    # Group members table (Many-to-Many)
-    c.execute('''
-        CREATE TABLE IF NOT EXISTS group_members (
-            group_id INTEGER,
-            file_id INTEGER,
-            added_at TEXT,
-            PRIMARY KEY (group_id, file_id),
-            FOREIGN KEY(group_id) REFERENCES groups(id) ON DELETE CASCADE,
-            FOREIGN KEY(file_id) REFERENCES files(id) ON DELETE CASCADE
-        )
-    ''')
-    
-    # --- Indexes for Performance (100k-3M rows) ---
-
-    # 1. Covering index for browsing (Drive -> Path)
-    c.execute('CREATE INDEX IF NOT EXISTS idx_files_drive_path ON files(drive_name, file_path)')
-
-    # 2. Sorting indexes
-    c.execute('CREATE INDEX IF NOT EXISTS idx_files_size ON files(size)')
-    c.execute('CREATE INDEX IF NOT EXISTS idx_files_created_at ON files(created_at)')
-    
-    # 2b. New Metadata Indexes
-    c.execute('CREATE INDEX IF NOT EXISTS idx_files_mtime ON files(file_mtime)')
-    c.execute('CREATE INDEX IF NOT EXISTS idx_files_ctime ON files(file_ctime)')
-    c.execute('CREATE INDEX IF NOT EXISTS idx_files_file_type ON files(file_type)')
-    c.execute('CREATE INDEX IF NOT EXISTS idx_files_mime_type ON files(mime_type)')
-    
-    # 3. Original lookup (existing + enhancement)
-    c.execute('CREATE INDEX IF NOT EXISTS idx_files_hash_original ON files(hash, is_original)')
-    
-    # 4. Group lookup efficiency
-    c.execute('CREATE INDEX IF NOT EXISTS idx_group_members_file_id ON group_members(file_id)')
-
-    # --- Full Text Search (FTS5) ---
-    # We use external content tables to save space, referencing the 'files' table.
-    # Note: Triggers are needed to keep FTS index in sync with main table.
-    
     try:
-        c.execute('''
-            CREATE VIRTUAL TABLE IF NOT EXISTS files_fts USING fts5(
-                file_path,
-                content='files',
-                content_rowid='id'
-            )
-        ''')
-
-        # Triggers to keep FTS in sync
-        c.execute('''
-            CREATE TRIGGER IF NOT EXISTS files_ai AFTER INSERT ON files BEGIN
-                INSERT INTO files_fts(rowid, file_path) VALUES (new.id, new.file_path);
-            END;
-        ''')
-        c.execute('''
-            CREATE TRIGGER IF NOT EXISTS files_ad AFTER DELETE ON files BEGIN
-                INSERT INTO files_fts(files_fts, rowid, file_path) VALUES('delete', old.id, old.file_path);
-            END;
-        ''')
-        c.execute('''
-            CREATE TRIGGER IF NOT EXISTS files_au AFTER UPDATE ON files BEGIN
-                INSERT INTO files_fts(files_fts, rowid, file_path) VALUES('delete', old.id, old.file_path);
-                INSERT INTO files_fts(rowid, file_path) VALUES (new.id, new.file_path);
-            END;
-        ''')
-    except sqlite3.OperationalError:
-        # FTS5 might not be enabled in SQLite build, typically it is on Linux/Mac
-        print("⚠ Warning: SQLite FTS5 extension not available. Search performance may be degraded.")
-
-    # Check if FTS index needs rebuilding (e.g. if table created after data existed)
-    try:
-        # Check if files exist
-        has_files = c.execute("SELECT 1 FROM files LIMIT 1").fetchone()
-        if has_files:
-            # Check if FTS data exists (shadow table)
-            # Safe way: check if query returns any matches for a common term, or check shadow table
-            # Checking shadow table is reliable for FTS5
-            has_index = False
-            try:
-                # files_fts_data is the main data table for FTS5
-                row_count = c.execute("SELECT count(*) FROM files_fts_data").fetchone()[0]
-                has_index = row_count > 10 # heuristic
-            except sqlite3.OperationalError:
-                pass
-            
-            if not has_index:
-                print("⚠ FTS index appears empty. Rebuilding (this may take a moment)...")
-                c.execute("INSERT INTO files_fts(files_fts) VALUES('rebuild')")
-                print("✓ FTS index rebuilt.")
-    except Exception as e:
-        print(f"⚠ Could not verify FTS index: {e}")
-
-    conn.commit()
-    conn.close()
+        run_migrations(conn)
+    finally:
+        conn.close()
 
 
 def load_file_count_cache() -> dict:
