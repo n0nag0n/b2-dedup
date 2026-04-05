@@ -18,13 +18,16 @@ import re
 import urllib.parse
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
+from typing import Optional
 from datetime import datetime, timedelta, timezone
 from tqdm import tqdm
 from file_utils import get_file_metadata
 
 # ================= CONFIG =================
-DB_PATH = Path.home() / "b2_dedup.db"
-CACHE_PATH = Path.home() / ".b2_dedup_cache.json"
+_DATA_DIR = Path(os.environ.get("B2_DEDUP_DATA_DIR", Path(__file__).parent / "data"))
+_DATA_DIR.mkdir(exist_ok=True)
+DB_PATH = _DATA_DIR / "b2_dedup.db"
+CACHE_PATH = _DATA_DIR / ".b2_dedup_cache.json"
 DEFAULT_MAX_WORKERS = 10
 CHUNK_SIZE = 4 * 1024 * 1024                 # 4MB
 FILE_COUNT_CACHE_DAYS = 7                    # Cache file count for 1 week
@@ -298,42 +301,53 @@ def sanitize_b2_path(path_str: str) -> str:
 class B2Manager:
     def __init__(self, bucket_name: str):
         from b2sdk.v2 import SqliteAccountInfo, InMemoryAccountInfo, B2Api
-        try:
-            info = SqliteAccountInfo()
-            self.api = B2Api(info)
-            self.api.authorize_automatically()
-            print("✓ Using stored B2 credentials (~/.b2/account_info)")
-        except Exception as e:
-            print(f"⚠ Could not load stored credentials: {e}")
-            print("Checking environment variables for fallback...")
-            key_id = os.getenv('B2_KEY_ID')
-            app_key = os.getenv('B2_APPLICATION_KEY')
+        key_id = os.getenv('B2_KEY_ID')
+        app_key = os.getenv('B2_APPLICATION_KEY')
 
-            if key_id and app_key:
-                print("✓ Using B2 credentials from environment variables")
-                info = InMemoryAccountInfo()
+        if key_id and app_key:
+            print("✓ Using B2 credentials from environment variables")
+            info = InMemoryAccountInfo()
+            self.api = B2Api(info)
+            self.api.authorize_account("production", key_id, app_key)
+        else:
+            try:
+                info = SqliteAccountInfo()
                 self.api = B2Api(info)
-                self.api.authorize_account("production", key_id, app_key)
-            else:
-                raise RuntimeWarning("No B2 credentials found (tried ~/.b2/ and env vars B2_KEY_ID/B2_APPLICATION_KEY)")
+                self.api.authorize_automatically()
+                print("✓ Using stored B2 credentials (~/.config/b2/account_info)")
+            except Exception as e:
+                raise RuntimeWarning("No B2 credentials found (tried ~/.config/b2/ and env vars B2_KEY_ID/B2_APPLICATION_KEY)") from e
 
         self.bucket = self.api.get_bucket_by_name(bucket_name)
 
     def file_exists(self, remote_path: str) -> bool:
         try:
-            versions = list(self.bucket.list_file_versions(remote_path, max_versions=1))
-            return len(versions) > 0 and versions[0].file_name == remote_path
+            for fv in self.bucket.list_file_versions(remote_path, fetch_count=1):
+                return fv.file_name == remote_path
         except:
-            return False
+            pass
+        return False
 
-    def upload_file(self, local_path: Path, remote_path: str):
+    def get_file_info(self, remote_path: str) -> Optional[dict]:
+        """Returns {'upload_timestamp_ms': int, 'size': int} or None if not found."""
+        try:
+            for fv in self.bucket.list_file_versions(remote_path, fetch_count=1):
+                if fv.file_name == remote_path:
+                    return {"upload_timestamp_ms": fv.upload_timestamp, "size": fv.size}
+                break
+        except Exception:
+            pass
+        return None
+
+    def upload_file(self, local_path: Path, remote_path: str, progress_listener=None):
         """Upload a local file to B2 with retries for transient IO errors."""
         max_retries = 3
         for attempt in range(max_retries):
             try:
                 self.bucket.upload_local_file(
                     local_file=str(local_path),
-                    file_name=remote_path
+                    file_name=remote_path,
+                    progress_listener=progress_listener,
                 )
                 return
             except OSError as e:

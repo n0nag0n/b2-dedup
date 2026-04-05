@@ -1,0 +1,11 @@
+services:
+  b2-dedup:
+    build: .
+    ports:
+      - "8501:8501"
+    volumes:
+      # DB, cache, and GUI config live in ./data on the host
+      - ./data:/app/data
+    env_file:
+      - .env
+    restart: unless-stopped
