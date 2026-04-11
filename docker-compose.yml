@@ -6,6 +6,10 @@ services:
     volumes:
       # DB, cache, and GUI config live in ./data on the host
       - ./data:/app/data
+      # Map the host drives into the container for uploading via GUI.
+      # Define HOST_DRIVES_PATH in your .env file to match your OS:
+      # Mac: /Volumes, Linux: /media, Windows: D:\
+      - ${HOST_DRIVES_PATH:-./data}:/host_drives:ro
     env_file:
       - .env
     restart: unless-stopped
