@@ -221,6 +221,15 @@ class B2Manager:
             pass
         return None
 
+    def copy_file(self, source_path: str, dest_path: str):
+        """Perform a server-side copy of a file if it exists."""
+        try:
+            fv = self.bucket.get_file_info_by_name(source_path)
+            self.bucket.copy(fv.id_, dest_path)
+        except Exception as e:
+            print(f"Failed to copy {source_path} to {dest_path}: {e}")
+            pass
+
     def upload_file(self, local_path: Path, remote_path: str, progress_listener=None):
         """Upload a local file to B2 with retries for transient IO errors."""
         max_retries = 3

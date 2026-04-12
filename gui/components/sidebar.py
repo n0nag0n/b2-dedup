@@ -130,16 +130,31 @@ def _render_db_backup():
                 st.success("Up to date.")
             show_backup_btn = True
 
-        col1, col2 = st.columns(2)
-        if col2.button("Refresh", key="db_backup_refresh"):
+        col1, col2, col3 = st.columns(3)
+        if col1.button("Sync To", key="db_sync_to"):
+            _confirm_sync_dialog("Sync To", db_bucket)
+
+        if col2.button("Sync From", key="db_sync_from"):
+            _confirm_sync_dialog("Sync From", db_bucket)
+
+        if col3.button("Refresh", key="db_backup_refresh"):
             del st.session_state["db_backup_status"]
             st.rerun()
 
-        if show_backup_btn and col1.button("Backup Now", key="db_backup_now"):
-            _do_db_backup(db_bucket)
+
+@st.dialog("Confirm Database Sync")
+def _confirm_sync_dialog(action_type: str, db_bucket: str):
+    st.warning(f"Are you sure you want to {action_type}?")
+    st.write("This may overwrite your existing backup. A `.prev` version will be kept automatically.")
+    if st.button("Confirm"):
+        if action_type == "Sync To":
+            _do_db_sync_to(db_bucket)
+        elif action_type == "Sync From":
+            _do_db_sync_from(db_bucket)
+        st.rerun()
 
 
-def _do_db_backup(db_bucket: str):
+def _do_db_sync_to(db_bucket: str):
     try:
         from b2sdk.v2 import AbstractProgressListener
         from streamlit.runtime.scriptrunner import add_script_run_ctx, get_script_run_ctx
@@ -167,6 +182,14 @@ def _do_db_backup(db_bucket: str):
                 super().close()
 
         bm = b2_dedup.B2Manager(db_bucket)
+        
+        # Keep previous backup remotely in B2
+        try:
+            prev_remote_path = DB_REMOTE_PATH.replace(".db", ".prev.db")
+            bm.copy_file(DB_REMOTE_PATH, prev_remote_path)
+        except Exception:
+            pass
+
         snapshot_mtime = os.path.getmtime(b2_dedup.DB_PATH)
         snapshot_size = os.path.getsize(b2_dedup.DB_PATH)
         bm.upload_file(b2_dedup.DB_PATH, DB_REMOTE_PATH, progress_listener=_StreamlitListener())
@@ -175,9 +198,38 @@ def _do_db_backup(db_bucket: str):
         cfg["db_backup_local_size"] = snapshot_size
         save_gui_config(cfg)
         del st.session_state["db_backup_status"]
-        st.rerun()
     except Exception as e:
-        st.error(f"Backup failed: {e}")
+        st.error(f"Sync To failed: {e}")
+
+
+def _do_db_sync_from(db_bucket: str):
+    try:
+        status_text = st.empty()
+        status_text.info("Downloading database from B2...")
+        bm = b2_dedup.B2Manager(db_bucket)
+
+        # Backup local just in case
+        if os.path.exists(b2_dedup.DB_PATH):
+            import shutil
+            shutil.copy2(b2_dedup.DB_PATH, str(b2_dedup.DB_PATH) + ".prev")
+
+        bm.download_file_to_path(DB_REMOTE_PATH, b2_dedup.DB_PATH)
+
+        snapshot_mtime = os.path.getmtime(b2_dedup.DB_PATH)
+        snapshot_size = os.path.getsize(b2_dedup.DB_PATH)
+
+        cfg = load_gui_config()
+        cfg["db_backup_local_mtime"] = snapshot_mtime
+        cfg["db_backup_local_size"] = snapshot_size
+        save_gui_config(cfg)
+        
+        if "db_backup_status" in st.session_state:
+            del st.session_state["db_backup_status"]
+            
+        status_text.success("Database synced from B2 successfully.")
+        import time; time.sleep(1)
+    except Exception as e:
+        st.error(f"Sync From failed: {e}")
 
 
 def _render_group_creation():
