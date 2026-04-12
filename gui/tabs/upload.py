@@ -123,6 +123,7 @@ def render_upload_tab(selected_drive, selected_group_name, group_map):
             universal_newlines=True
         )
         
+        import html as pyhtml
         log_lines = []
         for line in process.stdout:
             # Clean up terminal control characters emitted by tqdm or other outputs
@@ -132,7 +133,14 @@ def render_upload_tab(selected_drive, selected_group_name, group_map):
                 if len(log_lines) > 500:
                     log_lines.pop(0) # Keep tail to prevent out of memory in browser
                 
-                log_container.code('\n'.join(log_lines), language='bash')
+                logs = '\n'.join(log_lines)
+                # Using a CSS column-reverse flex layout to naturally pin scroll to bottom
+                html_str = f"""
+<div style="height: 350px; overflow-y: auto; display: flex; flex-direction: column-reverse; background-color: #1E1E1E; color: #D4D4D4; border: 1px solid #333; border-radius: 5px; padding: 10px;">
+    <pre style="margin: 0; font-family: monospace; font-size: 13px; white-space: pre-wrap; word-break: break-word;">{pyhtml.escape(logs)}</pre>
+</div>
+"""
+                log_container.markdown(html_str, unsafe_allow_html=True)
                 
         process.wait()
         if process.returncode == 0:
