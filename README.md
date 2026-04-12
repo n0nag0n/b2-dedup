@@ -55,6 +55,29 @@ pip install -r requirements.txt
 # or install venv and run pip install -r requirements.txt
 ```
 
+## Docker Usage
+
+The easiest way to run the Web UI and deduplicator is via Docker. 
+
+When configuring your `docker-compose.yml` or `.env` file, the `HOST_DRIVES_PATH` variable controls which local directory gets mapped to `/host_drives/` inside the container. The Web UI provides a built-in directory browser that starts at `/host_drives/` to let you click through and select your upload path.
+
+### Windows Users & Multiple Drives
+
+Since the app runs inside a Linux container, Windows drives mapped to `/host_drives/` will appear as standard folders in the GUI. If you set `HOST_DRIVES_PATH=D:\`, you will see your `D:\` drive's contents in the GUI browser.
+
+**Accessing Multiple Drives:** 
+If you want to access both `C:\` and `D:\` drives simultaneously without constantly changing your `.env` file, you can bypass the `.env` variable and mount the drives directly in your `docker-compose.yml`:
+
+```yaml
+    volumes:
+      - .env:/app/.env:ro
+      - ./data:/app/data
+      # Mount Windows drives explicitly:
+      - C:\:/host_drives/C:ro
+      - D:\:/host_drives/D:ro
+```
+With this setup, the GUI browser will immediately show `C` and `D` folders, allowing you to easily browse any drive.
+
 ---
 
 ## B2 Configuration

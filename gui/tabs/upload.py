@@ -12,13 +12,59 @@ def render_upload_tab(selected_drive, selected_group_name, group_map):
     ensure `HOST_DRIVES_PATH` is configured correctly in `.env` and `docker-compose.yml`, then restart the container.
     """)
     
+    # --- Directory Browser ---
+    if 'upload_dir' not in st.session_state:
+        st.session_state.upload_dir = "/host_drives/"
+        
+    current_dir = st.session_state.upload_dir
+    
+    # Provide fallback if path somehow becomes invalid
+    if not os.path.exists(current_dir):
+        current_dir = "/host_drives/"
+        st.session_state.upload_dir = current_dir
+
+    st.write("### Browse Local Folders")
+    
+    col_up, col_path = st.columns([1, 4])
+    with col_up:
+        # Only allow going up if we aren't already at root or the base mount
+        if current_dir != "/" and current_dir.rstrip("/") != "/host_drives":
+            if st.button("⬆️ Up One Level", use_container_width=True):
+                st.session_state.upload_dir = os.path.dirname(current_dir.rstrip('/')) + '/'
+                if hasattr(st, 'rerun'):
+                    st.rerun()
+                else:
+                    st.experimental_rerun()
+    with col_path:
+        st.code(current_dir)
+
+    try:
+        subdirs = [d for d in os.listdir(current_dir) if os.path.isdir(os.path.join(current_dir, d))]
+        subdirs.sort()
+    except Exception as e:
+        subdirs = []
+        st.warning(f"Could not read directory `{current_dir}`: {e}")
+
+    if subdirs:
+        selected_sub = st.selectbox("Navigate into folder:", ["(Select folder to enter)"] + subdirs)
+        if selected_sub != "(Select folder to enter)":
+            st.session_state.upload_dir = os.path.join(current_dir, selected_sub) + '/'
+            if hasattr(st, 'rerun'):
+                st.rerun()
+            else:
+                st.experimental_rerun()
+    else:
+        st.info("No subdirectories found.")
+
+    st.divider()
+
     config = load_gui_config()
     default_bucket = config.get("bucket_name", "")
     
     with st.form("upload_form"):
         col1, col2 = st.columns(2)
         with col1:
-            upload_path = st.text_input("Local Upload Path", value="/host_drives/", help="Path inside the Docker container")
+            upload_path = st.text_input("Local Upload Path", value=st.session_state.upload_dir, help="Path inside the Docker container")
             drive_name = st.text_input("Drive Name", value="", help="The top-level drive folder in B2")
         
         with col2:
