@@ -9,8 +9,8 @@ RUN pip install --no-cache-dir \
     streamlit \
     pandas
 
-COPY b2_dedup.py b2_gui.py file_utils.py ./
-
+# Copy the entire app (respecting .dockerignore)
+COPY . .
 # Data dir (DB, cache, GUI config) — bind-mount ./data here at runtime
 RUN mkdir -p /app/data
 
