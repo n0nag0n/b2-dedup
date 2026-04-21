@@ -120,7 +120,8 @@ def render_upload_tab(selected_drive, selected_group_name, group_map):
             stderr=subprocess.STDOUT,
             text=True,
             bufsize=1,
-            universal_newlines=True
+            universal_newlines=True,
+            errors='replace'
         )
         
         import html as pyhtml
@@ -130,8 +131,8 @@ def render_upload_tab(selected_drive, selected_group_name, group_map):
             clean_line = line.replace('\r', '').rstrip()
             if clean_line:
                 log_lines.append(clean_line)
-                if len(log_lines) > 500:
-                    log_lines.pop(0) # Keep tail to prevent out of memory in browser
+                if len(log_lines) > 20:
+                    log_lines.pop(0) # Keep tail to prevent out of memory and avoid long scrolling
                 
                 logs = '\n'.join(log_lines)
                 # Using a CSS column-reverse flex layout to naturally pin scroll to bottom

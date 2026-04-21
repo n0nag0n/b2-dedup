@@ -100,3 +100,14 @@ def resolve_folder_to_ids(drive_name: str, folder_path: str) -> list[int]:
         return [f[0] for f in found]
     finally:
         conn.close()
+
+
+def delete_drive(drive_name: str) -> None:
+    """Delete all records for a given drive from the local database."""
+    conn = get_db_connection()
+    try:
+        conn.execute("DELETE FROM files WHERE drive_name = ?", (drive_name,))
+        conn.commit()
+    finally:
+        conn.close()
+

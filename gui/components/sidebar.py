@@ -8,7 +8,7 @@ import streamlit as st
 
 import b2_dedup
 from gui.config import load_gui_config, save_gui_config
-from gui.db import get_db_connection, get_drives, get_groups, format_size
+from gui.db import get_db_connection, get_drives, get_groups, format_size, delete_drive
 from gui.state import get_basket_all_ids, get_basket_size, clear_basket
 
 DB_REMOTE_PATH = "__b2_dedup_metadata__/b2_dedup.db"
@@ -39,6 +39,9 @@ def render_sidebar() -> tuple[str, str, dict[str, int]]:
 
         st.divider()
         _render_basket_summary()
+
+        st.divider()
+        _render_manage_drives(selected_drive)
 
     return selected_drive, selected_group_name, group_map
 
@@ -261,3 +264,84 @@ def _render_basket_summary():
             st.rerun()
     else:
         st.caption("Basket is empty")
+
+
+def _render_manage_drives(selected_drive: str):
+    with st.expander("Manage Drives"):
+        if selected_drive == "All Drives":
+            st.write("Select a specific drive at the top to manage it.")
+            return
+
+        st.warning(f"Manage data for **{selected_drive}**")
+        if st.button("Delete Drive Data", key="delete_drive_btn"):
+            _confirm_delete_drive_dialog(selected_drive)
+
+
+@st.dialog("⚠️ Delete Drive Data ⚠️")
+def _confirm_delete_drive_dialog(drive_name: str):
+    st.error(f"**SCARY WARNING: You are about to delete all local metadata for the drive '{drive_name}'!**")
+    st.write("This will permanently remove all file records for this drive from the local database.")
+    
+    delete_from_b2 = st.checkbox("Also permanently delete all associated files for this drive from the B2 bucket")
+    dry_run = False
+    if delete_from_b2:
+        st.error("🚨 **WARNING: This will permanently delete the actual files from your Backblaze B2 bucket. This action cannot be undone.**")
+        dry_run = st.checkbox("Dry Run (Don't actually delete from B2, just show what would be deleted)", value=True)
+    else:
+        st.write("*(Note: If unchecked, this does NOT delete the actual files from your B2 bucket. The app just won't track them anymore.)*")
+    
+    with st.form("delete_drive_form"):
+        confirm_text = st.text_input(f"Type the exact drive name to confirm: {drive_name}")
+        btn_text = "Execute Dry Run" if dry_run else "Permanently Delete"
+        submitted = st.form_submit_button(btn_text, type="primary")
+        
+        if submitted:
+            if confirm_text.strip() == drive_name.strip():
+                if delete_from_b2:
+                    import b2_dedup
+                    from gui.config import load_gui_config
+                    cfg = load_gui_config()
+                    bucket_name = cfg.get("bucket_name")
+                    if not bucket_name:
+                        st.error("No B2 bucket configured. Cannot delete from B2.")
+                        return
+                    
+                    try:
+                        bm = b2_dedup.B2Manager(bucket_name)
+                        prefix = b2_dedup.sanitize_b2_path(drive_name) + "/"
+                        
+                        if dry_run:
+                            st.info(f"Gathering dry run info from B2 for {drive_name}...")
+                            files_deleted = bm.delete_directory(prefix, dry_run=True)
+                            st.success(f"DRY RUN: Found {len(files_deleted)} files that would be deleted from B2.")
+                            if files_deleted:
+                                sample = "\n".join(files_deleted[:20])
+                                if len(files_deleted) > 20:
+                                    sample += f"\n... and {len(files_deleted)-20} more"
+                                st.text_area("Files that would be deleted (Sample):", sample, height=200)
+                            st.info("Local database was NOT modified during this dry run.")
+                            return # Stop here for dry run
+                        
+                        progress_bar = st.progress(0, text=f"Finding files in B2 for {drive_name}...")
+                        
+                        def progress_cb(current, total):
+                            pct = current / total if total > 0 else 1.0
+                            progress_bar.progress(pct, text=f"Deleting from B2: {current}/{total} files...")
+                            
+                        bm.delete_directory(prefix, progress_callback=progress_cb)
+                        progress_bar.progress(1.0, text="B2 deletion complete.")
+                    except Exception as e:
+                        st.error(f"Failed to delete from B2: {e}")
+                        return
+    
+                delete_drive(drive_name)
+                if delete_from_b2:
+                    st.success(f"Drive '{drive_name}' deleted from B2 and local database.")
+                else:
+                    st.success(f"Drive '{drive_name}' deleted from local database.")
+                
+                import time
+                time.sleep(1.5)
+                st.rerun()
+            else:
+                st.error("Drive name did not match. Deletion aborted.")

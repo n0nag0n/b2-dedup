@@ -272,6 +272,25 @@ class B2Manager:
         else:
             return self.bucket.ls(prefix)
 
+    def delete_directory(self, prefix: str, progress_callback=None, dry_run=False) -> list[str]:
+        """Delete all file versions under a given prefix. If dry_run is True, return list of file names without deleting."""
+        files_to_delete = []
+        for file_version, _ in self.list_files(prefix):
+            files_to_delete.append(file_version)
+            
+        total = len(files_to_delete)
+        if dry_run:
+            return [fv.file_name for fv in files_to_delete]
+
+        for i, fv in enumerate(files_to_delete):
+            try:
+                self.api.delete_file_version(fv.id_, fv.file_name)
+            except Exception as e:
+                print(f"Failed to delete {fv.file_name}: {e}")
+            if progress_callback:
+                progress_callback(i + 1, total)
+        return [fv.file_name for fv in files_to_delete]
+
 
 def process_file(args_tuple):
     filepath, rel_path, drive_name, scan_only, dry_run, b2 = args_tuple
