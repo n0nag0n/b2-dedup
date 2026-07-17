@@ -4,7 +4,7 @@ import os
 import sys
 from gui.config import load_gui_config, save_gui_config
 
-def render_upload_tab(selected_drive, selected_group_name, group_map):
+def render_upload_tab(_selected_drive, _selected_group_name, _group_map):
     st.header("☁️ Upload Local Drive")
     
     st.markdown("""
@@ -31,10 +31,7 @@ def render_upload_tab(selected_drive, selected_group_name, group_map):
         if current_dir != "/" and current_dir.rstrip("/") != "/host_drives":
             if st.button("⬆️ Up One Level", use_container_width=True):
                 st.session_state.upload_dir = os.path.dirname(current_dir.rstrip('/')) + '/'
-                if hasattr(st, 'rerun'):
-                    st.rerun()
-                else:
-                    st.experimental_rerun()
+                st.rerun()
     with col_path:
         st.code(current_dir)
 
@@ -49,10 +46,7 @@ def render_upload_tab(selected_drive, selected_group_name, group_map):
         selected_sub = st.selectbox("Navigate into folder:", ["(Select folder to enter)"] + subdirs)
         if selected_sub != "(Select folder to enter)":
             st.session_state.upload_dir = os.path.join(current_dir, selected_sub) + '/'
-            if hasattr(st, 'rerun'):
-                st.rerun()
-            else:
-                st.experimental_rerun()
+            st.rerun()
     else:
         st.info("No subdirectories found.")
 

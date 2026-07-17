@@ -198,7 +198,9 @@ class B2Manager:
                 self.api.authorize_automatically()
                 print("✓ Using stored B2 credentials (~/.config/b2/account_info)")
             except Exception as e:
-                raise RuntimeWarning("No B2 credentials found (tried ~/.config/b2/ and env vars B2_KEY_ID/B2_APPLICATION_KEY)") from e
+                raise RuntimeError(
+                    "No B2 credentials found (tried ~/.config/b2/ and env vars B2_KEY_ID/B2_APPLICATION_KEY)"
+                ) from e
 
         self.bucket = self.api.get_bucket_by_name(bucket_name)
 
@@ -206,7 +208,7 @@ class B2Manager:
         try:
             for fv in self.bucket.list_file_versions(remote_path, fetch_count=1):
                 return fv.file_name == remote_path
-        except:
+        except Exception:
             pass
         return False
 
@@ -292,125 +294,111 @@ class B2Manager:
         return [fv.file_name for fv in files_to_delete]
 
 
+def _insert_file_record(c, file_hash, actual_size, drive_name, file_path, upload_path, is_original, meta):
+    """INSERT OR IGNORE a files row. Returns cursor.rowcount (0 if ignored)."""
+    c.execute(
+        "INSERT OR IGNORE INTO files "
+        "(hash, size, drive_name, file_path, upload_path, is_original, created_at, "
+        " file_mtime, file_ctime, file_atime, mime_type, file_type) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (
+            file_hash, actual_size, drive_name, file_path, upload_path, is_original,
+            datetime.now(timezone.utc).isoformat(),
+            meta['mtime'], meta['ctime'], meta['atime'], meta['mime_type'], meta['file_type'],
+        ),
+    )
+    return c.rowcount
+
+
 def process_file(args_tuple):
     filepath, rel_path, drive_name, scan_only, dry_run, b2 = args_tuple
-    
-    # Get thread-local connection
+
     conn = get_thread_connection()
     c = conn.cursor()
-    
+
     remote_name = sanitize_b2_path(f"{drive_name}/{rel_path.as_posix()}")
     file_path = rel_path.as_posix()  # Relative path from drive root
 
     try:
-        file_size = filepath.stat().st_size
         file_hash, actual_size = sha256_file(filepath)
-        
-        # Capture enriched metadata
-        meta = get_file_metadata(filepath)
-        # Fallback if error (though unlikely here since we just stat'd it)
-        if "error" in meta:
-             # Basic fallback
-             meta = {
-                 "mtime": None, "ctime": None, "atime": None, 
-                 "mime_type": None, "file_type": "Unknown"
-             }
 
-        # Check if this exact file path already exists in the database
-        c.execute("SELECT id FROM files WHERE drive_name = ? AND file_path = ?", (drive_name, file_path))
+        meta = get_file_metadata(filepath)
+        if "error" in meta:
+            meta = {
+                "mtime": None, "ctime": None, "atime": None,
+                "mime_type": None, "file_type": "Unknown",
+            }
+
+        c.execute(
+            "SELECT id FROM files WHERE drive_name = ? AND file_path = ?",
+            (drive_name, file_path),
+        )
         if c.fetchone():
             return "already_tracked", filepath
 
-        # Check if this hash already exists (for any file) - find the original
-        c.execute("SELECT upload_path FROM files WHERE hash = ? AND is_original = 1 LIMIT 1", (file_hash,))
+        c.execute(
+            "SELECT upload_path FROM files WHERE hash = ? AND is_original = 1 LIMIT 1",
+            (file_hash,),
+        )
         existing = c.fetchone()
-        
+
         if existing:
-            # This is a duplicate - create pointer file
+            # Duplicate — record pointer (or just DB row in scan-only mode)
             original_upload_path = existing[0]
-            
+
             if scan_only:
-                # In scan-only mode, just record the location
-                c.execute(
-                    "INSERT OR IGNORE INTO files (hash, size, drive_name, file_path, upload_path, is_original, created_at, file_mtime, file_ctime, file_atime, mime_type, file_type) "
-                    "VALUES (?, ?, ?, ?, NULL, 0, ?, ?, ?, ?, ?, ?)",
-                    (file_hash, actual_size, drive_name, file_path, datetime.now(timezone.utc).isoformat(),
-                     meta['mtime'], meta['ctime'], meta['atime'], meta['mime_type'], meta['file_type'])
+                _insert_file_record(
+                    c, file_hash, actual_size, drive_name, file_path, None, 0, meta
                 )
                 conn.commit()
                 return "duplicate_recorded", filepath
-            
-            # Create pointer content
+
             pointer_content = create_pointer_content(file_hash, original_upload_path)
             pointer_remote_path = remote_name + POINTER_EXTENSION
-            
-            # Check if pointer already exists
+
             if b2.file_exists(pointer_remote_path):
-                c.execute(
-                    "INSERT OR IGNORE INTO files (hash, size, drive_name, file_path, upload_path, is_original, created_at, file_mtime, file_ctime, file_atime, mime_type, file_type) "
-                    "VALUES (?, ?, ?, ?, NULL, 0, ?, ?, ?, ?, ?, ?)",
-                    (file_hash, actual_size, drive_name, file_path, datetime.now(timezone.utc).isoformat(),
-                     meta['mtime'], meta['ctime'], meta['atime'], meta['mime_type'], meta['file_type'])
+                _insert_file_record(
+                    c, file_hash, actual_size, drive_name, file_path, None, 0, meta
                 )
                 conn.commit()
                 return "pointer_exists", filepath
-            
+
             if dry_run:
                 return "would_create_pointer", filepath
-            
-            # Upload pointer file
+
             b2.upload_bytes(pointer_content, pointer_remote_path)
-            c.execute(
-                "INSERT OR IGNORE INTO files (hash, size, drive_name, file_path, upload_path, is_original, created_at, file_mtime, file_ctime, file_atime, mime_type, file_type) "
-                "VALUES (?, ?, ?, ?, NULL, 0, ?, ?, ?, ?, ?, ?)",
-                (file_hash, actual_size, drive_name, file_path, datetime.now(timezone.utc).isoformat(),
-                 meta['mtime'], meta['ctime'], meta['atime'], meta['mime_type'], meta['file_type'])
+            _insert_file_record(
+                c, file_hash, actual_size, drive_name, file_path, None, 0, meta
             )
             conn.commit()
             return "pointer_created", filepath
 
-        # This is a new unique file
+        # New unique file
         if scan_only:
-            c.execute(
-                "INSERT OR IGNORE INTO files (hash, size, drive_name, file_path, upload_path, is_original, created_at, file_mtime, file_ctime, file_atime, mime_type, file_type) "
-                "VALUES (?, ?, ?, ?, NULL, 1, ?, ?, ?, ?, ?, ?)",
-                (file_hash, actual_size, drive_name, file_path, datetime.now(timezone.utc).isoformat(),
-                 meta['mtime'], meta['ctime'], meta['atime'], meta['mime_type'], meta['file_type'])
+            _insert_file_record(
+                c, file_hash, actual_size, drive_name, file_path, None, 1, meta
             )
             conn.commit()
             return "scanned", filepath
-        else:
-            # Normal mode: check if already in bucket
-            if b2.file_exists(remote_name):
-                c.execute(
-                    "INSERT OR IGNORE INTO files (hash, size, drive_name, file_path, upload_path, is_original, created_at, file_mtime, file_ctime, file_atime, mime_type, file_type) "
-                    "VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?)",
-                    (file_hash, actual_size, drive_name, file_path, remote_name, datetime.now(timezone.utc).isoformat(),
-                     meta['mtime'], meta['ctime'], meta['atime'], meta['mime_type'], meta['file_type'])
-                )
-                conn.commit()
-                return "exists", filepath
 
-            if dry_run:
-                return "would_upload", filepath
-
-            # Actual upload
-            b2.upload_file(filepath, remote_name)
-            
-            c.execute(
-                "INSERT OR IGNORE INTO files (hash, size, drive_name, file_path, upload_path, is_original, created_at, file_mtime, file_ctime, file_atime, mime_type, file_type) "
-                "VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?)",
-                (file_hash, actual_size, drive_name, file_path, remote_name, datetime.now(timezone.utc).isoformat(),
-                 meta['mtime'], meta['ctime'], meta['atime'], meta['mime_type'], meta['file_type'])
+        if b2.file_exists(remote_name):
+            _insert_file_record(
+                c, file_hash, actual_size, drive_name, file_path, remote_name, 1, meta
             )
-            
-            # Check if row was actually inserted (race condition handling)
-            if c.rowcount == 0:
-                conn.commit()
-                return "race_duplicate", filepath
-
             conn.commit()
-            return "uploaded", filepath
+            return "exists", filepath
+
+        if dry_run:
+            return "would_upload", filepath
+
+        b2.upload_file(filepath, remote_name)
+        rowcount = _insert_file_record(
+            c, file_hash, actual_size, drive_name, file_path, remote_name, 1, meta
+        )
+        conn.commit()
+        if rowcount == 0:
+            return "race_duplicate", filepath
+        return "uploaded", filepath
 
     except Exception as e:
         return "error", filepath, str(e)

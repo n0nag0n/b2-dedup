@@ -10,7 +10,6 @@ from gui.db import get_db_connection, resolve_folder_to_ids
 def resolve_selection_to_ids(selected_rows: pd.DataFrame) -> list[int]:
     """Resolve a DataFrame selection (may include directory rows) to file IDs."""
     ids = set()
-    conn = get_db_connection()
     try:
         if 'is_dir' in selected_rows.columns:
             is_dir_mask = selected_rows['is_dir'].fillna(False).astype(bool)
@@ -34,8 +33,6 @@ def resolve_selection_to_ids(selected_rows: pd.DataFrame) -> list[int]:
                 ids.update(resolve_folder_to_ids(d_drive, d_path))
     except Exception as e:
         st.error(f"Error resolving selection: {e}")
-    finally:
-        conn.close()
     return list(ids)
 
 

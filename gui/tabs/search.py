@@ -48,10 +48,12 @@ def render_search_tab(selected_drive: str, selected_group_name: str, group_map: 
 
     st.markdown(f"**Found {total_rows:,} files**")
 
-    selected_rows = _render_results(df)
+    _render_results_fragment(df, st.session_state.page)
     _render_pagination(total_rows)
 
-    if not selected_rows.empty:
+    selected_ids = st.session_state.basket_file_ids & set(df['id'].tolist())
+    if selected_ids:
+        selected_rows = df[df['id'].isin(selected_ids)]
         st.divider()
         render_group_actions(selected_rows, group_map, selected_group_name, "search")
 
@@ -75,7 +77,10 @@ def _render_advanced_filters() -> dict:
 
         filter_date_range = []
         if filter_period == "Custom Range":
-            filter_date_range = st.date_input("Select Date Range", [])
+            filter_date_range = st.date_input(
+                "Select Date Range", [],
+                min_value=datetime(1970, 1, 1).date(),
+            )
 
         st.caption("Extensions Filter")
         filter_ext = st.text_input("File Extensions (comma separated)", placeholder="e.g. jpg, png, pdf")
@@ -174,10 +179,13 @@ def _build_query(
     return base, params
 
 
-def _render_results(df: pd.DataFrame) -> pd.DataFrame:
+@st.fragment
+def _render_results_fragment(df: pd.DataFrame, page: int) -> None:
+    # @st.fragment: checkbox clicks rerun only this fragment (no scroll reset, no stale-state discards)
     if df.empty:
-        return pd.DataFrame()
+        return
 
+    df = df.copy().reset_index(drop=True)
     df['size_fmt'] = df['size'].apply(format_size)
     for col in ['file_mtime', 'created_at', 'file_atime', 'file_ctime']:
         if col in df.columns:
@@ -190,7 +198,8 @@ def _render_results(df: pd.DataFrame) -> pd.DataFrame:
                   'file_ctime', 'size', 'has_group']
     cols_order = [c for c in cols_order if c in df.columns]
 
-    edited_df = st.data_editor(
+    editor_key = f"editor_{page}"
+    st.data_editor(
         df[cols_order],
         column_config={
             "selected": st.column_config.CheckboxColumn("Select", default=False),
@@ -210,17 +219,19 @@ def _render_results(df: pd.DataFrame) -> pd.DataFrame:
         },
         hide_index=True,
         disabled=[c for c in cols_order if c != "selected"],
-        key=f"editor_{st.session_state.page}"
+        key=editor_key
     )
 
-    for _, row in edited_df.iterrows():
-        fid = int(row['id'])
-        if row['selected']:
-            st.session_state.basket_file_ids.add(fid)
-        else:
-            st.session_state.basket_file_ids.discard(fid)
-
-    return edited_df[edited_df['selected']]
+    if editor_key in st.session_state:
+        for row_idx, changes in st.session_state[editor_key].get("edited_rows", {}).items():
+            if "selected" in changes:
+                idx = int(row_idx)
+                if idx < len(df):
+                    fid = int(df.iloc[idx]['id'])
+                    if changes["selected"]:
+                        st.session_state.basket_file_ids.add(fid)
+                    else:
+                        st.session_state.basket_file_ids.discard(fid)
 
 
 def _render_pagination(total_rows: int):

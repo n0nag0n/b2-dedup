@@ -54,19 +54,27 @@ def _render_basket_download(all_ids: list[int]):
             tmp_path = tmp.name
 
         skipped = 0
+        # One query for all basket rows (preserve caller order)
+        conn = get_db_connection()
+        try:
+            placeholders = ",".join("?" * len(all_ids))
+            rows = conn.execute(
+                f"SELECT id, hash, is_original, upload_path, drive_name, file_path "
+                f"FROM files WHERE id IN ({placeholders})",
+                all_ids,
+            ).fetchall()
+        finally:
+            conn.close()
+        rec_by_id = {r[0]: r[1:] for r in rows}
+
         with zipfile.ZipFile(tmp_path, 'w', zipfile.ZIP_DEFLATED) as zf:
             for i, fid in enumerate(all_ids):
-                conn = get_db_connection()
-                rec = conn.execute(
-                    "SELECT hash, is_original, upload_path, drive_name, file_path FROM files WHERE id = ?",
-                    (fid,)
-                ).fetchone()
-                conn.close()
+                rec = rec_by_id.get(fid)
                 if not rec:
                     skipped += 1
                     continue
 
-                f_hash, is_orig, up_path, d_name, f_path = rec
+                _, is_orig, up_path, d_name, f_path = rec
                 remote_path = b2_dedup.sanitize_b2_path(f"{d_name}/{f_path}")
 
                 try:
