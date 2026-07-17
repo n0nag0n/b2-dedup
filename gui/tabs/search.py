@@ -6,6 +6,7 @@ import streamlit as st
 
 from gui.db import get_db_connection, get_file_types, format_size
 from gui.components.group_actions import render_group_actions
+from gui.components.selection import render_file_table
 
 ROWS_PER_PAGE = 50
 
@@ -48,14 +49,25 @@ def render_search_tab(selected_drive: str, selected_group_name: str, group_map: 
 
     st.markdown(f"**Found {total_rows:,} files**")
 
-    _render_results_fragment(df, st.session_state.page)
-    _render_pagination(total_rows)
+    if df.empty:
+        st.info("No files match your search.")
+        _render_pagination(total_rows)
+        return
 
-    selected_ids = st.session_state.basket_file_ids & set(df['id'].tolist())
-    if selected_ids:
-        selected_rows = df[df['id'].isin(selected_ids)]
+    df = df.copy()
+    df['size_fmt'] = df['size'].apply(format_size)
+    for col in ['file_mtime', 'created_at', 'file_atime', 'file_ctime']:
+        if col in df.columns:
+            df[col] = pd.to_datetime(df[col], errors='coerce')
+
+    st.caption("Check a box to add a file to the basket.")
+    selected = render_file_table(df, name_col="file_path", show_drive=True, key_prefix="search")
+
+    if not selected.empty:
         st.divider()
-        render_group_actions(selected_rows, group_map, selected_group_name, "search")
+        render_group_actions(selected, group_map, selected_group_name, "search")
+
+    _render_pagination(total_rows)
 
 
 # ── private helpers ──────────────────────────────────────────────────────────
@@ -179,61 +191,6 @@ def _build_query(
     return base, params
 
 
-@st.fragment
-def _render_results_fragment(df: pd.DataFrame, page: int) -> None:
-    # @st.fragment: checkbox clicks rerun only this fragment (no scroll reset, no stale-state discards)
-    if df.empty:
-        return
-
-    df = df.copy().reset_index(drop=True)
-    df['size_fmt'] = df['size'].apply(format_size)
-    for col in ['file_mtime', 'created_at', 'file_atime', 'file_ctime']:
-        if col in df.columns:
-            df[col] = pd.to_datetime(df[col], errors='coerce')
-
-    df['selected'] = df['id'].isin(st.session_state.basket_file_ids)
-
-    cols_order = ['selected', 'id', 'drive_name', 'file_path', 'size_fmt', 'file_mtime',
-                  'created_at', 'file_atime', 'file_type', 'is_original', 'mime_type',
-                  'file_ctime', 'size', 'has_group']
-    cols_order = [c for c in cols_order if c in df.columns]
-
-    editor_key = f"editor_{page}"
-    st.data_editor(
-        df[cols_order],
-        column_config={
-            "selected": st.column_config.CheckboxColumn("Select", default=False),
-            "drive_name": "Drive",
-            "file_path": "Path",
-            "size_fmt": "Size",
-            "file_mtime": st.column_config.DatetimeColumn("Modified", format="YYYY-MM-DD HH:mm"),
-            "created_at": st.column_config.DatetimeColumn("Added", format="YYYY-MM-DD HH:mm"),
-            "file_atime": st.column_config.DatetimeColumn("Accessed", format="YYYY-MM-DD HH:mm"),
-            "file_ctime": st.column_config.DatetimeColumn("Created", format="YYYY-MM-DD HH:mm"),
-            "is_original": "Orig?",
-            "file_type": "Type",
-            "mime_type": "MIME",
-            "id": None,
-            "size": None,
-            "has_group": None,
-        },
-        hide_index=True,
-        disabled=[c for c in cols_order if c != "selected"],
-        key=editor_key
-    )
-
-    if editor_key in st.session_state:
-        for row_idx, changes in st.session_state[editor_key].get("edited_rows", {}).items():
-            if "selected" in changes:
-                idx = int(row_idx)
-                if idx < len(df):
-                    fid = int(df.iloc[idx]['id'])
-                    if changes["selected"]:
-                        st.session_state.basket_file_ids.add(fid)
-                    else:
-                        st.session_state.basket_file_ids.discard(fid)
-
-
 def _render_pagination(total_rows: int):
     st.divider()
     col_p1, col_p2, col_p3 = st.columns([1, 2, 1])
@@ -243,7 +200,7 @@ def _render_pagination(total_rows: int):
                 st.session_state.page -= 1
                 st.rerun()
     with col_p2:
-        total_pages = (total_rows // ROWS_PER_PAGE) + 1
+        total_pages = max(1, (total_rows + ROWS_PER_PAGE - 1) // ROWS_PER_PAGE) if total_rows else 1
         st.markdown(
             f"<p style='text-align: center'>Page {st.session_state.page} of {total_pages}</p>",
             unsafe_allow_html=True
