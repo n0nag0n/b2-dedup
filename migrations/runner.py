@@ -13,10 +13,8 @@ versioning (it stamps migration 001 as already applied if the `files` table
 already exists, so the CREATE IF NOT EXISTS calls are harmless but the stamp
 prevents re-running).
 """
-import importlib
 import importlib.util
 import sqlite3
-import sys
 from pathlib import Path
 
 MIGRATIONS_DIR = Path(__file__).parent

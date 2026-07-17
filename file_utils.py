@@ -1,7 +1,6 @@
 import mimetypes
 from pathlib import Path
 from datetime import datetime, timezone
-import os
 
 # Map extensions to categories
 EXTENSION_CATEGORY_MAP = {

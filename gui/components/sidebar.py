@@ -118,10 +118,8 @@ def _render_db_backup():
         backed_mtime = cfg.get("db_backup_local_mtime")
         backed_size = cfg.get("db_backup_local_size")
 
-        show_backup_btn = False
         if b2_info is None or backed_mtime is None:
             st.warning("Not backed up to B2.")
-            show_backup_btn = True
         else:
             b2_dt = datetime.fromtimestamp(
                 b2_info["upload_timestamp_ms"] / 1000.0
@@ -131,7 +129,6 @@ def _render_db_backup():
                 st.warning("Local has changed since last backup.")
             else:
                 st.success("Up to date.")
-            show_backup_btn = True
 
         col1, col2, col3 = st.columns(3)
         if col1.button("Sync To", key="db_sync_to"):

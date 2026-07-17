@@ -146,8 +146,7 @@ def _render_files(
     group_map: dict[str, int],
 ):
     if f_df.empty:
-        if not st.session_state.get('_dirs_rendered'):
-            st.info("No files in this folder")
+        st.info("No files in this folder")
         return
 
     f_df['size_fmt'] = f_df['size'].apply(format_size)
