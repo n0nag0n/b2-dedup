@@ -6,6 +6,7 @@ import streamlit as st
 
 from gui.db import get_db_connection, format_size
 from gui.components.group_actions import render_group_actions
+from gui.components.selection import render_folder_row, render_file_table
 
 ROWS_PER_PAGE = 50
 
@@ -29,9 +30,8 @@ def render_browse_tab(selected_drive: str, selected_group_name: str, group_map: 
     dirs = _list_subdirs(selected_drive, current_prefix)
     f_df, total_browse_files = _query_files(selected_drive, current_prefix)
 
-    dirs_df = _build_dirs_df(dirs, current_prefix, selected_drive)
-    _render_dirs(dirs_df)
-    _render_files(f_df, current_prefix, total_browse_files, selected_group_name, group_map)
+    _render_dirs(dirs, current_prefix, selected_drive)
+    _render_files(f_df, current_prefix, total_browse_files, group_map)
 
 
 # ── private helpers ──────────────────────────────────────────────────────────
@@ -101,101 +101,54 @@ def _query_files(drive: str, prefix: str) -> tuple[pd.DataFrame, int]:
     return df, total
 
 
-def _build_dirs_df(dirs: list[str], prefix: str, drive: str) -> pd.DataFrame:
-    if st.session_state.browse_page == 1 and dirs:
-        return pd.DataFrame([{
-            'is_dir': True,
-            'name': d,
-            'file_path': f"{prefix}{d}",
-            'drive_name': drive,
-            'id': -1,
-        } for d in dirs])
-    return pd.DataFrame()
-
-
-def _render_dirs(dirs_df: pd.DataFrame):
-    if dirs_df.empty:
+def _render_dirs(dirs: list[str], prefix: str, drive: str):
+    if st.session_state.browse_page != 1 or not dirs:
         return
     st.divider()
-    for _, row in dirs_df.iterrows():
-        folder_key = (row['drive_name'], row['file_path'])
-        widget_key = f"dir_sel_{row['drive_name']}_{row['file_path']}"
-        nav_key = f"nav_{row['drive_name']}_{row['file_path']}"
+    st.caption("Folders — click ＋ to add every file inside to the basket; click the name to open.")
 
-        if widget_key not in st.session_state:
-            st.session_state[widget_key] = folder_key in st.session_state.basket_folder_paths
+    def _navigate(folder_path: str):
+        st.session_state.browse_path = folder_path
+        st.session_state.browse_page = 1
+        st.rerun()
 
-        dcols = st.columns([0.5, 8])
-        checked = dcols[0].checkbox("select dir", key=widget_key, label_visibility="collapsed")
-        if checked:
-            st.session_state.basket_folder_paths.add(folder_key)
-        else:
-            st.session_state.basket_folder_paths.discard(folder_key)
-
-        if dcols[1].button(f"📁 {row['name']}", key=nav_key):
-            st.session_state.browse_path = row['file_path']
-            st.session_state.browse_page = 1
-            st.rerun()
+    for d in dirs:
+        folder_path = f"{prefix}{d}"
+        render_folder_row(drive, folder_path, d, _navigate)
 
 
 def _render_files(
     f_df: pd.DataFrame,
     prefix: str,
     total: int,
-    selected_group_name: str,
     group_map: dict[str, int],
 ):
     if f_df.empty:
         st.info("No files in this folder")
+        _render_pagination(total)
         return
 
+    f_df = f_df.copy()
     f_df['size_fmt'] = f_df['size'].apply(format_size)
     f_df['name'] = f_df['file_path'].apply(lambda x: x[len(prefix):])
     for col in ['file_mtime', 'created_at', 'file_atime', 'file_ctime']:
         if col in f_df.columns:
             f_df[col] = pd.to_datetime(f_df[col], errors='coerce')
 
-    f_df['selected'] = f_df['id'].isin(st.session_state.basket_file_ids)
-
-    browse_cols = ['selected', 'name', 'size_fmt', 'file_mtime', 'created_at',
-                   'file_type', 'is_original', 'id', 'file_path', 'drive_name']
-    browse_cols = [c for c in browse_cols if c in f_df.columns]
-
     st.divider()
-    browse_edited = st.data_editor(
-        f_df[browse_cols],
-        column_config={
-            "selected": st.column_config.CheckboxColumn("Select", default=False),
-            "name": "Name",
-            "size_fmt": "Size",
-            "file_mtime": st.column_config.DatetimeColumn("Modified", format="YYYY-MM-DD HH:mm"),
-            "created_at": st.column_config.DatetimeColumn("Added", format="YYYY-MM-DD HH:mm"),
-            "file_type": "Type",
-            "is_original": "Orig?",
-            "id": None,
-            "file_path": None,
-            "drive_name": None,
-            "size": None,
-            "mime_type": None,
-        },
-        hide_index=True,
-        disabled=[c for c in browse_cols if c != "selected"],
-        key=f"browse_editor_{st.session_state.browse_page}"
-    )
+    st.caption("Files — check a box to add it to the basket.")
+    selected = render_file_table(f_df, name_col="name", show_drive=False, key_prefix="browse")
 
-    for _, row in browse_edited.iterrows():
-        fid = int(row['id'])
-        if row['selected']:
-            st.session_state.basket_file_ids.add(fid)
-        else:
-            st.session_state.basket_file_ids.discard(fid)
-
-    browse_files_selected = browse_edited[browse_edited['selected']]
-    if not browse_files_selected.empty:
+    if not selected.empty:
         st.divider()
-        render_group_actions(browse_files_selected, group_map, "All Files", "browse")
+        render_group_actions(selected, group_map, "All Files", "browse")
 
-    # Pagination
+    _render_pagination(total)
+
+
+def _render_pagination(total: int):
+    if total <= 0:
+        return
     col_bp1, col_bp2, col_bp3 = st.columns([1, 2, 1])
     with col_bp1:
         if st.session_state.browse_page > 1:
@@ -203,8 +156,8 @@ def _render_files(
                 st.session_state.browse_page -= 1
                 st.rerun()
     with col_bp2:
-        total_pages = (total // ROWS_PER_PAGE) + 1
-        st.write(f"Page {st.session_state.browse_page} of {total_pages}")
+        total_pages = max(1, (total + ROWS_PER_PAGE - 1) // ROWS_PER_PAGE)
+        st.write(f"Page {st.session_state.browse_page} of {total_pages} ({total:,} files)")
     with col_bp3:
         if total > st.session_state.browse_page * ROWS_PER_PAGE:
             if st.button("Next"):
