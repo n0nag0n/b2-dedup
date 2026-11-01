@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}StorageInsights{% endblock %}</title>
+    <link rel="stylesheet" href="/static/app.css">
+    <script defer src="/static/alpine.min.js"></script>
+    {% block head %}{% endblock %}
+</head>
+<body>
+    <header class="top">
+        <div class="top-inner">
+            <a class="brand" href="/">StorageInsights</a>
+            <p class="tagline">A searchable home vault for old drives</p>
+            <nav>
+                <a href="/" {% if request.url.path == '/' %}aria-current="page"{% endif %}>Home</a>
+                <a href="/search" {% if request.url.path.startswith('/search') %}aria-current="page"{% endif %}>Search</a>
+                <a href="/library" {% if request.url.path.startswith('/library') or request.url.path.startswith('/timeline') or request.url.path.startswith('/moment') %}aria-current="page"{% endif %}>Library</a>
+                <a href="/browse" {% if request.url.path.startswith('/browse') %}aria-current="page"{% endif %}>Browse</a>
+                <a href="/ingest" {% if request.url.path.startswith('/ingest') %}aria-current="page"{% endif %}>Ingest</a>
+                <a href="/restore-set" {% if request.url.path.startswith('/restore') %}aria-current="page"{% endif %}>
+                    Restore set{% if restore_count|default(0) %} ({{ restore_count }}){% endif %}
+                </a>
+                <a href="/jobs" {% if request.url.path.startswith('/jobs') %}aria-current="page"{% endif %}>Jobs</a>
+                <a href="/settings" {% if request.url.path.startswith('/settings') %}aria-current="page"{% endif %}>Settings</a>
+                {% if password_on %}
+                <form method="post" action="/logout" class="inline">
+                    <button type="submit">Sign out</button>
+                </form>
+                {% endif %}
+            </nav>
+        </div>
+    </header>
+    <main class="wrap">
+        {% if notice %}
+        <p class="notice" role="status">{{ notice }}</p>
+        {% endif %}
+        {% block content %}{% endblock %}
+    </main>
+</body>
+</html>

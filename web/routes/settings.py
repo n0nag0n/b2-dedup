@@ -1,0 +1,254 @@
+"""Settings: bucket, restore dest, catalog backup, verify, manage drives."""
+from __future__ import annotations
+
+from pathlib import Path
+
+from fastapi import APIRouter, Form, Request
+from fastapi.responses import HTMLResponse, RedirectResponse
+
+from core.backup import backup_status, refresh_remote_status
+from core.catalog import get_drive_names
+from core.library import dates_status
+from core.config import (
+    add_ingest_extra_root,
+    get_bucket_name,
+    get_ingest_extra_roots,
+    get_restore_dest,
+    get_workers,
+    remove_ingest_extra_root,
+    set_bucket_name,
+    set_restore_dest,
+    set_workers,
+)
+from core.volumes import is_forbidden_root, scan_places
+from core.health import get_vault_health
+from core.jobs import enqueue
+from core.junk import INGEST_SKIP_DIR_NAMES, INGEST_SKIP_FILE_NAMES, SEARCH_HIDE_DIR_NAMES
+from core.paths import DB_REMOTE_PATH
+from core.thumbs import thumbs_status
+from core.verify import DEFAULT_SAMPLE_SIZE
+from web.auth import password_required
+from web.templating import page_vars, set_notice, templates
+
+router = APIRouter()
+
+SYNC_FROM_PHRASE = "overwrite"
+
+
+def _library_view() -> dict:
+    dates = dates_status()
+    return {
+        "images_fmt": f"{dates['images']:,}",
+        "dated_fmt": f"{dates['dated']:,}",
+        "folder_fmt": f"{dates['folder']:,}",
+        "mtime_fmt": f"{dates['mtime']:,}",
+        "exif_fmt": f"{dates['exif']:,}",
+        **dates,
+    }
+
+
+def _settings_page(request: Request, **extra):
+    health = get_vault_health()
+    return templates.TemplateResponse(
+        "settings.html",
+        page_vars(
+            request,
+            health=health,
+            library=_library_view(),
+            thumbs=thumbs_status(),
+            backup=backup_status(),
+            drives=get_drive_names(),
+            bucket=get_bucket_name(),
+            restore_dest=get_restore_dest(),
+            workers=get_workers(),
+            sample_size=DEFAULT_SAMPLE_SIZE,
+            junk_dirs=sorted(INGEST_SKIP_DIR_NAMES),
+            junk_files=sorted(INGEST_SKIP_FILE_NAMES),
+            hide_dirs=sorted(SEARCH_HIDE_DIR_NAMES),
+            password_set=password_required(),
+            remote_path=DB_REMOTE_PATH,
+            sync_from_phrase=SYNC_FROM_PHRASE,
+            ingest_scan=scan_places(),
+            ingest_extra_roots=get_ingest_extra_roots(),
+            **extra,
+        ),
+    )
+
+
+@router.get("/settings", response_class=HTMLResponse)
+def settings_page(request: Request):
+    return _settings_page(request)
+
+
+@router.post("/settings/save")
+def settings_save(
+    request: Request,
+    bucket_name: str = Form(""),
+    restore_dest: str = Form(""),
+    workers: int = Form(10),
+):
+    bucket_name = bucket_name.strip()
+    restore_dest = restore_dest.strip()
+    try:
+        workers = max(1, min(int(workers), 64))
+    except (TypeError, ValueError):
+        workers = get_workers()
+    set_bucket_name(bucket_name)
+    set_restore_dest(restore_dest)
+    set_workers(workers)
+    set_notice(request, "Settings saved.")
+    return RedirectResponse("/settings", status_code=303)
+
+
+@router.post("/settings/ingest-root/add")
+def settings_add_ingest_root(request: Request, folder: str = Form("")):
+    raw = folder.strip()
+    if not raw:
+        set_notice(request, "Enter a folder to watch for ingest.")
+        return RedirectResponse("/settings", status_code=303)
+    path = Path(raw).expanduser()
+    try:
+        if not path.is_dir():
+            set_notice(request, "That path is not a folder on this computer.")
+            return RedirectResponse("/settings", status_code=303)
+        resolved = path.resolve()
+    except OSError:
+        set_notice(request, "Could not open that folder.")
+        return RedirectResponse("/settings", status_code=303)
+    if is_forbidden_root(resolved):
+        set_notice(request, "Choose the disk or folder you want to back up, not a system directory.")
+        return RedirectResponse("/settings", status_code=303)
+    add_ingest_extra_root(str(resolved))
+    set_notice(request, f"Ingest will also look in {resolved}.")
+    return RedirectResponse("/settings", status_code=303)
+
+
+@router.post("/settings/ingest-root/remove")
+def settings_remove_ingest_root(request: Request, folder: str = Form("")):
+    remove_ingest_extra_root(folder.strip())
+    set_notice(request, "Removed that extra folder.")
+    return RedirectResponse("/settings", status_code=303)
+
+
+@router.post("/settings/verify")
+def settings_verify(
+    request: Request,
+    mode: str = Form("sample"),
+    sample_size: int = Form(DEFAULT_SAMPLE_SIZE),
+):
+    bucket = get_bucket_name()
+    if not bucket:
+        set_notice(request, "Set a B2 bucket first.")
+        return RedirectResponse("/settings", status_code=303)
+    mode = "full" if mode == "full" else "sample"
+    try:
+        sample_size = max(1, min(int(sample_size), 10000))
+    except (TypeError, ValueError):
+        sample_size = DEFAULT_SAMPLE_SIZE
+    job_id = enqueue(
+        "verify",
+        {
+            "mode": mode,
+            "sample_size": sample_size,
+            "bucket": bucket,
+            "workers": get_workers(),
+        },
+    )
+    set_notice(request, f"Verify job #{job_id} queued ({mode}).")
+    return RedirectResponse(f"/jobs/{job_id}", status_code=303)
+
+
+@router.post("/settings/dates")
+def settings_dates(request: Request):
+    job_id = enqueue("dates", {})
+    set_notice(request, f"Date job #{job_id} queued.")
+    return RedirectResponse(f"/jobs/{job_id}", status_code=303)
+
+
+@router.post("/settings/thumbs")
+def settings_thumbs(request: Request, limit: str = Form("500")):
+    bucket = get_bucket_name()
+    if not bucket:
+        set_notice(request, "Set a B2 bucket first.")
+        return RedirectResponse("/settings", status_code=303)
+    try:
+        n = int(limit)
+    except (TypeError, ValueError):
+        n = 500
+    payload = {"bucket": bucket, "limit": n}
+    job_id = enqueue("thumbs", payload)
+    set_notice(request, f"Thumbnail job #{job_id} queued.")
+    return RedirectResponse(f"/jobs/{job_id}", status_code=303)
+
+
+@router.post("/settings/backup/refresh")
+def settings_backup_refresh(request: Request):
+    if not get_bucket_name():
+        set_notice(request, "Set a B2 bucket first.")
+        return RedirectResponse("/settings", status_code=303)
+    try:
+        refresh_remote_status()
+        set_notice(request, "Checked B2 for the catalog backup.")
+    except Exception as e:
+        set_notice(request, f"Could not check B2: {e}")
+    return RedirectResponse("/settings", status_code=303)
+
+
+@router.post("/settings/backup/sync-to")
+def settings_backup_sync_to(request: Request, confirm: str = Form("")):
+    if not get_bucket_name():
+        set_notice(request, "Set a B2 bucket first.")
+        return RedirectResponse("/settings", status_code=303)
+    if confirm != "1":
+        set_notice(request, "Confirm that you want to replace the B2 catalog backup.")
+        return RedirectResponse("/settings", status_code=303)
+    job_id = enqueue("db_backup", {"bucket": get_bucket_name()})
+    set_notice(request, f"Catalog backup job #{job_id} queued.")
+    return RedirectResponse(f"/jobs/{job_id}", status_code=303)
+
+
+@router.post("/settings/backup/sync-from")
+def settings_backup_sync_from(request: Request, confirm: str = Form("")):
+    if not get_bucket_name():
+        set_notice(request, "Set a B2 bucket first.")
+        return RedirectResponse("/settings", status_code=303)
+    if (confirm or "").strip().lower() != SYNC_FROM_PHRASE:
+        set_notice(request, f'Type "{SYNC_FROM_PHRASE}" to replace the local catalog from B2.')
+        return RedirectResponse("/settings", status_code=303)
+    job_id = enqueue("db_restore", {"bucket": get_bucket_name()})
+    set_notice(request, f"Catalog restore job #{job_id} queued.")
+    return RedirectResponse(f"/jobs/{job_id}", status_code=303)
+
+
+@router.post("/settings/delete-drive")
+def settings_delete_drive(
+    request: Request,
+    drive_name: str = Form(""),
+    confirm_name: str = Form(""),
+    delete_from_b2: str = Form(""),
+    dry_run: str = Form(""),
+):
+    drive_name = drive_name.strip()
+    confirm_name = confirm_name.strip()
+    if not drive_name:
+        set_notice(request, "Choose a drive to remove.")
+        return RedirectResponse("/settings", status_code=303)
+    if confirm_name != drive_name:
+        set_notice(request, "Drive name did not match. Nothing was deleted.")
+        return RedirectResponse("/settings", status_code=303)
+    from_b2 = bool(delete_from_b2)
+    is_dry = bool(dry_run)
+    if from_b2 and not get_bucket_name():
+        set_notice(request, "Set a B2 bucket before deleting objects there.")
+        return RedirectResponse("/settings", status_code=303)
+    job_id = enqueue(
+        "delete_drive",
+        {
+            "drive_name": drive_name,
+            "delete_from_b2": from_b2,
+            "dry_run": is_dry,
+            "bucket": get_bucket_name(),
+        },
+    )
+    set_notice(request, f"Delete-drive job #{job_id} queued for {drive_name}.")
+    return RedirectResponse(f"/jobs/{job_id}", status_code=303)

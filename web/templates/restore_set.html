@@ -1,0 +1,45 @@
+{% extends "layout.html" %}
+{% block title %}Restore set · StorageInsights{% endblock %}
+{% block content %}
+<h1>Restore set</h1>
+<p class="lede">
+    {{ bag.count_fmt }} file(s) · {{ bag.size_fmt }} uncompressed.
+    Restore writes to a local folder (not a ZIP in the browser).
+</p>
+
+{% if bag.count %}
+<form method="post" action="/restore-set/start" class="restore-form">
+    <label>Destination folder
+        <input name="dest" type="text" value="{{ restore_dest }}" placeholder="/path/to/restore" required>
+    </label>
+    <p class="muted">Bucket: <code>{{ bucket or "not configured" }}</code></p>
+    <p class="actions">
+        <button type="submit">Start restore</button>
+    </p>
+</form>
+
+<form method="post" action="/restore-set/clear" class="inline">
+    <button type="submit" class="secondary">Clear set</button>
+</form>
+
+<h2 class="section-title">Files</h2>
+<ul class="copy-list">
+    {% for f in bag.preview %}
+    <li>
+        <form method="post" action="/restore-set/remove" class="inline">
+            <input type="hidden" name="file_id" value="{{ f.id }}">
+            <input type="hidden" name="next" value="/restore-set">
+            <button type="submit" class="linkish" title="Remove">✕</button>
+        </form>
+        <a href="/file/{{ f.id }}">{{ f.drive_name }}/{{ f.file_path }}</a>
+        <span class="muted">{{ f.size_fmt }}</span>
+    </li>
+    {% endfor %}
+</ul>
+{% if bag.preview_truncated %}
+<p class="muted">Showing the first {{ bag.preview | length }} of {{ bag.count_fmt }}. The full set will still restore.</p>
+{% endif %}
+{% else %}
+<p>Empty. Add files from Search or Browse, or use ＋ on a folder.</p>
+{% endif %}
+{% endblock %}

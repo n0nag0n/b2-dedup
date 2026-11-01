@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(grep -rn \"b2_dedup.db\\\\|DB_PATH\" /home/n0nag0n/projects/b2-dedup/*.py)",
+      "Bash(grep -rn \"upload.*db\\\\|backup.*db\\\\|save.*db\" /home/n0nag0n/projects/b2-dedup/*.py)",
+      "Bash(python -c ':*)"
+    ]
+  }
+}

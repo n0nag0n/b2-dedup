@@ -1,6 +1,8 @@
-# B2 Deduplicating Uploader
+# StorageInsights
 
-A powerful, parallel, streaming deduplicating uploader/downloader for Backblaze B2. This tool is designed to help you back up large amounts of data efficiently by ensuring files are only uploaded once across multiple runs or even different source drives. When duplicates are detected, lightweight pointer files are created that reference the original, allowing complete restoration of your backed-up directories.
+A home-network vault for old drives backed up to Backblaze B2. Files are hashed (SHA-256) and only uploaded once; duplicates become lightweight `.b2ptr` pointer files. A local SQLite catalog makes the archive searchable. Dedup is the plumbing — the product is finding what you already have.
+
+The CLI still handles unattended ingest and restore. `python b2_dedup.py serve` opens the StorageInsights web UI (FastAPI + HTML). Ingest is a background job (`/ingest`); search, browse, library/timeline, and restore-to-folder are in the same app. The previous Streamlit UI is `serve --legacy`.
 
 ## Purpose
 
@@ -46,37 +48,19 @@ If you previously uploaded drives using an older version of this tool (where dup
 - Backblaze B2 Account
 
 ### 2. Setup
-Clone this repository and install the dependencies:
+Clone this repository, create a virtualenv, and install the dependencies:
 
 ```bash
 git clone https://github.com/yourusername/b2-dedup.git
 cd b2-dedup
+python3 -m venv venv
+source venv/bin/activate          # Windows: venv\Scripts\activate
 pip install -r requirements.txt
-# or install venv and run pip install -r requirements.txt
+cp .env.example .env              # then fill in B2_KEY_ID and B2_APPLICATION_KEY
+python b2_dedup.py serve
 ```
 
-## Docker Usage
-
-The easiest way to run the Web UI and deduplicator is via Docker. 
-
-When configuring your `docker-compose.yml` or `.env` file, the `HOST_DRIVES_PATH` variable controls which local directory gets mapped to `/host_drives/` inside the container. The Web UI provides a built-in directory browser that starts at `/host_drives/` to let you click through and select your upload path.
-
-### Windows Users & Multiple Drives
-
-Since the app runs inside a Linux container, Windows drives mapped to `/host_drives/` will appear as standard folders in the GUI. If you set `HOST_DRIVES_PATH=D:\`, you will see your `D:\` drive's contents in the GUI browser.
-
-**Accessing Multiple Drives:** 
-If you want to access both `C:\` and `D:\` drives simultaneously without constantly changing your `.env` file, you can bypass the `.env` variable and mount the drives directly in your `docker-compose.yml`:
-
-```yaml
-    volumes:
-      - .env:/app/.env:ro
-      - ./data:/app/data
-      # Mount Windows drives explicitly:
-      - C:\:/host_drives/C:ro
-      - D:\:/host_drives/D:ro
-```
-With this setup, the GUI browser will immediately show `C` and `D` folders, allowing you to easily browse any drive.
+Open `http://localhost:8501`. Ingest (`/ingest`) lists plugged-in disks automatically (Linux: `/media` and `/mnt`, macOS: `/Volumes`, Windows: drive letters). If a disk is mounted somewhere else, add that folder on the Ingest page or in Settings.
 
 ---
 
@@ -103,9 +87,12 @@ python b2_dedup.py <action> [arguments] [flags]
 
 | Action | Description |
 | :--- | :--- |
-| `upload` | Upload files to B2 with deduplication and pointer file creation |
-| `download` | Download files from B2 with automatic pointer resolution |
-| `serve` | Launch the Streamlit-based Web UI for browsing and searching files |
+| `upload` / `ingest` | Upload files to B2 with deduplication and pointer file creation (same `core.ingest` as the web job) |
+| `download` / `restore` | Download files from B2 with automatic pointer resolution |
+| `verify` | Check that catalog originals still exist on B2 (`--sample N` or `--full`) |
+| `dates` | Fill `best_taken_at` from folder names and file times (no B2) |
+| `thumbs` | Build JPEG previews for unique images (`--limit N`, downloads from B2) |
+| `serve` | Launch StorageInsights (use `--legacy` for the previous Streamlit UI) |
 
 ---
 
@@ -200,25 +187,30 @@ python b2_dedup.py download MyBackup/ --dest /restore/test --bucket my-safe-stor
 
 ---
 
-## Serve Command (Web UI)
+## Verify Command
 
-The `serve` command launches a modern, browser-based interface for exploring your backup database.
+```bash
+python b2_dedup.py verify [--bucket BUCKET] [--sample 200] [--full]
+```
+
+Checks that catalog originals still exist on B2. Sample mode (default) probes a random subset. `--full` lists the bucket once and diffs it against every original that has an upload path. Scan-only rows without a remote path are counted, not treated as missing. The same check is a job on **Settings**.
+
+---
+
+## Serve Command (Web UI)
 
 ```bash
 python b2_dedup.py serve [--port PORT]
 ```
 
-### Features:
-- 📂 **File Browser:** Navigate through your drives and folders as they appear in B2.
-- 🔍 **Powerful Search:** Instant search across all drives using SQLite FTS (Full Text Search).
-- 📊 **Statistics:** View total storage usage, file counts, and deduplication efficiency.
-- 📋 **Metadata View:** See file sizes, upload dates, and original paths for duplicates.
+Opens StorageInsights at `http://localhost:8501` (or the given port). Home shows every drive, catalog totals, catalog-backup health, and the last B2 verify. Search is global. **Ingest** (`/ingest`) lists plugged-in disks, previews junk skips and already-tracked files, then starts a job. **Settings** (`/settings`) holds the bucket, restore destination, extra ingest folders, catalog backup/restore, and the verify job. Job logs live at `/jobs`.
 
-### Example:
+Optional LAN password: set `VAULT_PASSWORD` in `.env`. Leave it empty to keep the UI open on the local network.
+
 ```bash
-python b2_dedup.py serve --port 8501
+# Previous Streamlit UI, until the new pages replace it
+python b2_dedup.py serve --legacy --port 8501
 ```
-Once running, open your browser to `http://localhost:8501`.
 
 ---
 
@@ -227,12 +219,13 @@ Once running, open your browser to `http://localhost:8501`.
 ### Upload Process
 
 1. **Database:** The script creates a SQLite database at `~/b2_dedup.db`. 
-2. **Hashing:** Every file is hashed using SHA-256. This hash is the primary key in the database.
-3. **Detection:** Before uploading, the script checks the local database:
+2. **Hashing:** New or changed files are hashed using SHA-256. If `(drive_name, file_path)` already exists with the same size and mtime, the hash is skipped.
+3. **Junk:** `node_modules`, `venv`, AppleDouble `._*`, `.DS_Store`, and similar paths are never hashed or uploaded. `.git` / `.hg` stay in the backup.
+4. **Detection:** Before uploading, the script checks the local database:
    - **New file:** Upload to B2 and record in database as the original.
    - **Duplicate:** Create a pointer file (`.b2ptr`) containing the original file's B2 path, upload that instead.
-4. **Bucket Check:** If the hash is new but the file name exists in the B2 bucket, it is recorded without re-uploading.
-5. **Streaming:** Files are read and uploaded in chunks to keep memory usage low even for large files.
+5. **Bucket Check:** If the hash is new but the file name exists in the B2 bucket, it is recorded without re-uploading.
+6. **Streaming:** Files are read and uploaded in chunks to keep memory usage low even for large files.
 
 ### Pointer Files
 

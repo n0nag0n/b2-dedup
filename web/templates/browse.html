@@ -1,0 +1,111 @@
+{% extends "layout.html" %}
+{% block title %}Browse · StorageInsights{% endblock %}
+{% block content %}
+<h1>Browse</h1>
+
+<form method="get" action="/browse" class="filters">
+    <label>Drive
+        <select name="drive" onchange="this.form.submit()">
+            <option value="">Choose a drive</option>
+            {% for d in drives %}
+            <option value="{{ d }}" {% if d == drive %}selected{% endif %}>{{ d }}</option>
+            {% endfor %}
+        </select>
+    </label>
+    {% if drive %}
+    <label class="check">
+        <input type="hidden" name="path" value="{{ path }}">
+        <input type="checkbox" name="hidden" value="1" {% if not hide_hidden %}checked{% endif %} onchange="this.form.submit()">
+        Show hidden
+    </label>
+    {% endif %}
+    <noscript><button type="submit">Go</button></noscript>
+</form>
+
+{% if not listing %}
+<p class="lede">Pick a drive to walk its folders. Search is the better way to find a file when you do not remember which disk it lived on.</p>
+{% else %}
+<nav class="crumbs" aria-label="Breadcrumb">
+    {% if parent or path %}
+    <a href="/browse?drive={{ drive | urlencode }}&amp;path={{ parent | urlencode }}{% if not hide_hidden %}&amp;hidden=1{% endif %}">Up</a>
+    <span aria-hidden="true">·</span>
+    {% endif %}
+    {% for c in crumbs %}
+        {% if not loop.last %}
+        <a href="/browse?drive={{ drive | urlencode }}&amp;path={{ c.path | urlencode }}{% if not hide_hidden %}&amp;hidden=1{% endif %}">{{ c.label }}</a>
+        <span aria-hidden="true">/</span>
+        {% else %}
+        <span>{{ c.label }}</span>
+        {% endif %}
+    {% endfor %}
+</nav>
+
+{% if dirs %}
+<h2 class="section-title">Folders</h2>
+<ul class="folder-list">
+    {% for d in dirs %}
+    <li>
+        <form method="post" action="/restore-set/add" class="inline">
+            <input type="hidden" name="drive" value="{{ drive }}">
+            <input type="hidden" name="folder_path" value="{{ d.path }}">
+            <input type="hidden" name="next" value="{{ request.url }}">
+            <button type="submit" class="linkish" title="Add every file in this folder to the restore set">＋</button>
+        </form>
+        <a href="/browse?drive={{ drive | urlencode }}&amp;path={{ d.path | urlencode }}{% if not hide_hidden %}&amp;hidden=1{% endif %}">{{ d.name }}</a>
+    </li>
+    {% endfor %}
+</ul>
+{% if next_seek %}
+<p>
+    <a href="/browse?drive={{ drive | urlencode }}&amp;path={{ path | urlencode }}&amp;seek={{ next_seek | urlencode }}{% if not hide_hidden %}&amp;hidden=1{% endif %}">
+        More folders
+    </a>
+</p>
+{% endif %}
+{% endif %}
+
+<h2 class="section-title">Files {% if files.total %}({{ files.total_fmt }}){% endif %}</h2>
+{% if files.files %}
+<table class="files">
+    <thead>
+        <tr>
+            <th></th>
+            <th>Name</th>
+            <th>Size</th>
+            <th>Modified</th>
+            <th>Type</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for f in files.files %}
+        <tr>
+            <td>
+                {% if f.in_set %}
+                <form method="post" action="/restore-set/remove">
+                    <input type="hidden" name="file_id" value="{{ f.id }}">
+                    <input type="hidden" name="next" value="{{ request.url }}">
+                    <button type="submit" class="linkish">✓</button>
+                </form>
+                {% else %}
+                <form method="post" action="/restore-set/add">
+                    <input type="hidden" name="file_id" value="{{ f.id }}">
+                    <input type="hidden" name="next" value="{{ request.url }}">
+                    <button type="submit" class="linkish">＋</button>
+                </form>
+                {% endif %}
+            </td>
+            <td><a href="/file/{{ f.id }}">{{ f.name }}</a></td>
+            <td class="num">{{ f.size_fmt }}</td>
+            <td class="muted">{{ f.mtime_fmt }}</td>
+            <td class="muted">{{ f.file_type }}{% if not f.is_original %} · copy{% endif %}</td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+{% set results = files %}
+{% include "_pager.html" %}
+{% else %}
+<p class="muted">No files in this folder.</p>
+{% endif %}
+{% endif %}
+{% endblock %}

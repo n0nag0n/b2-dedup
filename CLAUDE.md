@@ -1,19 +1,21 @@
-# B2 Dedup — Claude Instructions
+# StorageInsights — Claude Instructions
 
 ## What this project is
 
-A Python CLI + web UI for deduplicating backups to Backblaze B2. Files are hashed (SHA-256) and only uploaded once; duplicates get lightweight `.b2ptr` JSON pointer files that reference the original. A local SQLite database tracks everything. The web UI (`serve` command) lets you browse, search, upload, and download files from that database.
+A home-network vault (product name **StorageInsights**) for deduplicating backups to Backblaze B2. Files are hashed (SHA-256) and only uploaded once; duplicates get lightweight `.b2ptr` JSON pointer files that reference the original. A local SQLite database tracks everything. `python b2_dedup.py serve` is the FastAPI + Jinja UI. Streamlit remains at `serve --legacy`. Ingest is `/ingest` (job). Settings (`/settings`) holds bucket, restore dest, catalog backup/restore, verify, date backfill, and thumbnails. Library is `/library` and `/timeline`. Home shows backup + last-verify health.
 
 ## Key files
 
 | Path | Purpose |
 |---|---|
-| `b2_dedup.py` | CLI entry point — `upload`, `download`, `serve`; `B2Manager`; DB init; upload/download workers |
-| `b2_gui.py` | Streamlit entry point — assembles tabs from `gui/` |
+| `b2_dedup.py` | Thin CLI — `upload`/`ingest`, `download`/`restore`, `verify`, `dates`, `thumbs`, `serve` |
+| `core/` | B2, hash, pointers, ingest, restore, verify, catalog backup, junk rules, time, thumbs, library |
+| `web/` | FastAPI app, Jinja templates, vendored Alpine + CSS |
 | `file_utils.py` | File metadata extraction (mtime/ctime/atime, mime type, category) |
-| `gui/` | Streamlit UI modules (see GUI architecture below) |
+| `gui/` | Legacy Streamlit UI (`serve --legacy`) |
 | `migrations/` | SQLite schema migrations applied by `init_db()` |
-| `requirements.txt` | Core: `b2sdk`, `tqdm`. GUI also needs `streamlit` + `pandas` (installed in Dockerfile) |
+| `.notes/overhaul-plan.md` | Rebuild plan |
+| `requirements.txt` | `b2sdk`, `tqdm`, FastAPI stack. Streamlit + pandas are optional for `serve --legacy` |
 
 ## Running the project
 
@@ -21,12 +23,15 @@ A Python CLI + web UI for deduplicating backups to Backblaze B2. Files are hashe
 # CLI
 python b2_dedup.py upload /path/to/drive --drive-name MyDrive --bucket my-bucket
 python b2_dedup.py download MyDrive/ --dest /restore --bucket my-bucket
+python b2_dedup.py verify --bucket my-bucket [--sample 200] [--full]
+python b2_dedup.py dates [--limit N]
+python b2_dedup.py thumbs --bucket my-bucket [--limit 500]
 
 # Web UI (opens http://localhost:8501)
 python b2_dedup.py serve [--port 8501]
 ```
 
-The `serve` command shells out to `streamlit run b2_gui.py`.
+The `serve` command runs FastAPI (`web.app:app`). `serve --legacy` still launches Streamlit.
 
 ## Important constants / paths
 
@@ -38,25 +43,27 @@ The `serve` command shells out to `streamlit run b2_gui.py`.
   - `db_backup_local_mtime` — float mtime of local DB at last backup
   - `db_backup_local_size` — int size of local DB at last backup
 - **Pointer file extension:** `.b2ptr` (`b2_dedup.POINTER_EXTENSION`)
-- **DB backup remote path:** `__b2_dedup_metadata__/b2_dedup.db` (`gui.components.sidebar.DB_REMOTE_PATH`)
+- **DB backup remote path:** `__b2_dedup_metadata__/b2_dedup.db` (`core.paths.DB_REMOTE_PATH`)
 - **Default workers:** 10 threads
 - **Chunk size:** 4 MB
 
 ## B2 credentials
 
-Tried in order: env vars `B2_KEY_ID` / `B2_APPLICATION_KEY` → stored b2sdk credentials via `SqliteAccountInfo` (checks `~/.b2_account_info` then `~/.config/b2/account_info`). Env vars take priority so Docker/CI works without a credential file. No hardcoded credentials anywhere.
+Tried in order: env vars `B2_KEY_ID` / `B2_APPLICATION_KEY` (including a project-root `.env` loaded automatically) → stored b2sdk credentials via `SqliteAccountInfo` (checks `~/.b2_account_info` then `~/.config/b2/account_info`). Env vars take priority. No hardcoded credentials anywhere.
 
-## Docker
+## Local run (venv)
 
 ```bash
+python3 -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt
 cp .env.example .env   # fill in B2_KEY_ID and B2_APPLICATION_KEY
-docker compose up --build
+python b2_dedup.py serve
 ```
 
-- `./data/` is bind-mounted to `/app/data` in the container — DB and config persist on the host.
-- `HOST_DRIVES_PATH` maps host folders to `/host_drives/` for the Upload tab browser.
-- `.env` is in `.gitignore`; `.env.example` documents all variables.
-- Dockerfile installs core requirements plus `streamlit` and `pandas`.
+- Catalog and config stay in `./data/` on the host.
+- Ingest (`/ingest`) lists plugged-in disks from OS mount points. Extra folders are stored in Settings (`ingest_extra_roots`).
+- `.env` is in `.gitignore`; `.env.example` documents variables.
 
 ## Database schema (SQLite, FTS5)
 
@@ -109,7 +116,7 @@ Entry: `b2_gui.py` → modules under `gui/`.
 | `gui/components/group_actions.py` | Add/remove selection to groups |
 | `gui/tabs/browse.py` | Folder browser |
 | `gui/tabs/search.py` | FTS + advanced filters |
-| `gui/tabs/upload.py` | Local drive upload (Docker `/host_drives/`) |
+| `gui/tabs/upload.py` | Legacy tab; ingest now lives at `/ingest` |
 
 Pure Streamlit for most UI; upload log uses a small HTML tail panel. All state lives in `st.session_state`.
 

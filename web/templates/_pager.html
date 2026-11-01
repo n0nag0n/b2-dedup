@@ -1,0 +1,11 @@
+{% if results and (results.page > 1 or results.has_more or results.pages > 1) %}
+<nav class="pager" aria-label="Pagination">
+    {% if results.page > 1 %}
+    <a href="{{ request.url.include_query_params(page=results.page - 1) }}">Previous</a>
+    {% endif %}
+    <span>Page {{ results.page }}{% if results.pages and not results.has_more %} of {{ results.pages }}{% endif %}</span>
+    {% if results.has_more or (results.pages and results.page < results.pages) %}
+    <a href="{{ request.url.include_query_params(page=results.page + 1) }}">Next</a>
+    {% endif %}
+</nav>
+{% endif %}

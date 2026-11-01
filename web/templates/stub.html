@@ -1,0 +1,10 @@
+{% extends "layout.html" %}
+{% block title %}{{ title }} · StorageInsights{% endblock %}
+{% block content %}
+<h1>{{ title }}</h1>
+<p class="lede">{{ message }}</p>
+{% if query %}
+<p>You searched for <strong>{{ query }}</strong>.</p>
+{% endif %}
+<p><a href="/">Back to Home</a></p>
+{% endblock %}

@@ -1,0 +1,109 @@
+{% extends "layout.html" %}
+{% block title %}Search · StorageInsights{% endblock %}
+{% block content %}
+<h1>Search</h1>
+<p class="lede">Looks across every drive. Junk and version-control trees are hidden unless you ask for them.</p>
+
+<form class="filters" method="get" action="/search">
+    <p class="search">
+        <label class="sr-only" for="q">Search</label>
+        <input id="q" name="q" type="search" value="{{ q }}" placeholder="e.g. triplets or IMG_8730" autofocus>
+        <button type="submit">Search</button>
+    </p>
+    <div class="filter-row">
+        <label>Drive
+            <select name="drive">
+                <option value="">All drives</option>
+                {% for d in drives %}
+                <option value="{{ d }}" {% if d == drive %}selected{% endif %}>{{ d }}</option>
+                {% endfor %}
+            </select>
+        </label>
+        <label>Type
+            <select name="type">
+                <option value="">All types</option>
+                {% for t in types %}
+                <option value="{{ t }}" {% if t == file_type %}selected{% endif %}>{{ t }}</option>
+                {% endfor %}
+            </select>
+        </label>
+        <label>Copies
+            <select name="origin">
+                <option value="" {% if not origin %}selected{% endif %}>All</option>
+                <option value="original" {% if origin == 'original' %}selected{% endif %}>Originals</option>
+                <option value="copy" {% if origin == 'copy' %}selected{% endif %}>Duplicates</option>
+            </select>
+        </label>
+        <label>Sort
+            <select name="sort">
+                <option value="path" {% if sort == 'path' %}selected{% endif %}>Path</option>
+                <option value="taken_desc" {% if sort == 'taken_desc' %}selected{% endif %}>Taken (newest)</option>
+                <option value="taken_asc" {% if sort == 'taken_asc' %}selected{% endif %}>Taken (oldest)</option>
+                <option value="mtime_desc" {% if sort == 'mtime_desc' %}selected{% endif %}>Modified (newest)</option>
+                <option value="mtime_asc" {% if sort == 'mtime_asc' %}selected{% endif %}>Modified (oldest)</option>
+                <option value="size_desc" {% if sort == 'size_desc' %}selected{% endif %}>Largest</option>
+                <option value="size_asc" {% if sort == 'size_asc' %}selected{% endif %}>Smallest</option>
+            </select>
+        </label>
+        <label>Year taken
+            <input name="year" value="{{ year }}" placeholder="2016" inputmode="numeric">
+        </label>
+        <label>Extensions
+            <input name="ext" value="{{ ext }}" placeholder="jpg, cr2">
+        </label>
+        <label class="check">
+            <input type="checkbox" name="hidden" value="1" {% if not hide_hidden %}checked{% endif %}>
+            Show hidden
+        </label>
+    </div>
+</form>
+
+{% if results %}
+<p class="meta">Showing <strong>{{ results.total_fmt }}</strong> files</p>
+{% if results.files %}
+<table class="files">
+    <thead>
+        <tr>
+            <th></th>
+            <th>Drive</th>
+            <th>Path</th>
+            <th>Size</th>
+            <th>Taken</th>
+            <th>Type</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for f in results.files %}
+        <tr>
+            <td>
+                {% if f.in_set %}
+                <form method="post" action="/restore-set/remove">
+                    <input type="hidden" name="file_id" value="{{ f.id }}">
+                    <input type="hidden" name="next" value="{{ request.url }}">
+                    <button type="submit" class="linkish" title="Remove from restore set">✓</button>
+                </form>
+                {% else %}
+                <form method="post" action="/restore-set/add">
+                    <input type="hidden" name="file_id" value="{{ f.id }}">
+                    <input type="hidden" name="next" value="{{ request.url }}">
+                    <button type="submit" class="linkish" title="Add to restore set">＋</button>
+                </form>
+                {% endif %}
+            </td>
+            <td><span class="badge">{{ f.drive_name }}</span></td>
+            <td><a href="/file/{{ f.id }}">{{ f.file_path }}</a></td>
+            <td class="num">{{ f.size_fmt }}</td>
+            <td class="muted">{{ f.taken_fmt or f.mtime_fmt }}</td>
+            <td class="muted">{{ f.file_type }}{% if not f.is_original %} · copy{% endif %}</td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+{% include "_pager.html" %}
+{% else %}
+<p>No files match that search.</p>
+{% endif %}
+{% elif q %}
+<p>No files match that search.</p>
+{% endif %}
+{% endblock %}

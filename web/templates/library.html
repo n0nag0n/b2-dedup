@@ -1,0 +1,90 @@
+{% extends "layout.html" %}
+{% block title %}Library · StorageInsights{% endblock %}
+{% block content %}
+<div class="wide">
+<h1>Library</h1>
+<p class="lede">
+    Unique files across every drive, junk hidden. Use type to look at photos,
+    documents, video, or everything together.
+    {% if dates.dated %}
+    {{ dates.dated_fmt }} photos dated{% if thumbs.thumbs_on_disk %} · {{ thumbs.thumbs_on_disk }} with previews{% endif %}.
+    {% endif %}
+</p>
+
+<nav class="subnav" aria-label="Library views">
+    <a href="/library{% if file_type %}?type={{ file_type | urlencode }}{% endif %}" aria-current="page">Grid</a>
+    <a href="/timeline{% if file_type %}?type={{ file_type | urlencode }}{% endif %}">Timeline</a>
+</nav>
+
+{% if not years %}
+<p class="warn">
+    Nothing is dated yet.
+    <a href="/settings">Run the date pass in Settings</a> so years and moments line up.
+</p>
+{% endif %}
+
+<form class="filters" method="get" action="/library">
+    <div class="filter-row">
+        <label>Type
+            <select name="type" onchange="this.form.submit()">
+                <option value="">All types</option>
+                {% for t in types %}
+                <option value="{{ t }}" {% if t == file_type %}selected{% endif %}>{{ t }}</option>
+                {% endfor %}
+            </select>
+        </label>
+        <label>Year
+            <select name="year" onchange="this.form.submit()">
+                <option value="">All years</option>
+                {% for y in years %}
+                <option value="{{ y.year }}" {% if y.year == year %}selected{% endif %}>{{ y.year }} ({{ y.count_fmt }})</option>
+                {% endfor %}
+            </select>
+        </label>
+        {% if months %}
+        <label>Month
+            <select name="month" onchange="this.form.submit()">
+                <option value="">All months</option>
+                {% for m in months %}
+                <option value="{{ m.month }}" {% if m.month == month %}selected{% endif %}>{{ m.name }} ({{ m.count_fmt }})</option>
+                {% endfor %}
+            </select>
+        </label>
+        {% endif %}
+        <label>Drive
+            <select name="drive" onchange="this.form.submit()">
+                <option value="">All drives</option>
+                {% for d in drives %}
+                <option value="{{ d }}" {% if d == drive %}selected{% endif %}>{{ d }}</option>
+                {% endfor %}
+            </select>
+        </label>
+    </div>
+    <noscript><button type="submit">Apply</button></noscript>
+</form>
+
+{% if results and results.files %}
+<p class="muted">Showing {{ results.total_fmt }} unique {{ results.noun }}.</p>
+<ul class="photo-grid">
+    {% for f in results.files %}
+    <li>
+        <a href="/file/{{ f.id }}" title="{{ f.drive_name }}/{{ f.file_path }}">
+            {% if f.thumb_url %}
+            <img src="{{ f.thumb_url }}" alt="" width="400" height="400">
+            {% else %}
+            <span class="thumb-ph">
+                {% if f.file_type %}<span class="badge">{{ f.file_type }}</span>{% endif %}
+                {{ f.name[:22] }}
+            </span>
+            {% endif %}
+            <span class="thumb-cap">{{ f.taken_fmt or f.name }}</span>
+        </a>
+    </li>
+    {% endfor %}
+</ul>
+{% include "_pager.html" %}
+{% else %}
+<p>No files match these filters.{% if not years %} Fill dates from Settings first.{% endif %}</p>
+{% endif %}
+</div>
+{% endblock %}

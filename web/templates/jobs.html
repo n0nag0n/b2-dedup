@@ -1,0 +1,86 @@
+{% extends "layout.html" %}
+{% block title %}{% if job %}Job {{ job.id }}{% else %}Jobs{% endif %} · StorageInsights{% endblock %}
+{% block head %}
+{% if job and (job.status == 'running' or job.status == 'pending') %}
+<meta http-equiv="refresh" content="3">
+{% endif %}
+{% endblock %}
+{% block content %}
+{% if job %}
+<h1>Job #{{ job.id }}</h1>
+<p class="lede">{{ job.type }} · <strong>{{ job.status }}</strong>
+    {% if job.progress_total %} · {{ job.progress_done }}/{{ job.progress_total }} ({{ job.percent }}%){% endif %}
+</p>
+{% if job.type == 'ingest' and job.payload %}
+<p class="muted">
+    {{ job.payload.drive_name }} · <code>{{ job.payload.source }}</code>
+    {% if job.payload.scan_only %} · scan only{% endif %}
+    {% if job.payload.dry_run %} · dry run{% endif %}
+</p>
+{% elif job.type == 'verify' and job.payload %}
+<p class="muted">
+    {{ job.payload.mode or 'sample' }}
+    {% if job.payload.mode != 'full' %} · sample {{ job.payload.sample_size }}{% endif %}
+    {% if job.payload.bucket %} · {{ job.payload.bucket }}{% endif %}
+</p>
+{% elif job.type in ('db_backup', 'db_restore') and job.payload %}
+<p class="muted">Catalog {{ 'upload to' if job.type == 'db_backup' else 'download from' }} B2
+    {% if job.payload.bucket %} · {{ job.payload.bucket }}{% endif %}
+</p>
+{% elif job.type == 'delete_drive' and job.payload %}
+<p class="muted">
+    {{ job.payload.drive_name }}
+    {% if job.payload.delete_from_b2 %} · also delete from B2{% endif %}
+    {% if job.payload.dry_run %} · dry run{% endif %}
+</p>
+{% elif job.type == 'dates' %}
+<p class="muted">Fill best-taken-at from folder names and file times. Catalog only — no B2.</p>
+{% elif job.type == 'thumbs' and job.payload %}
+<p class="muted">
+    Image previews
+    {% if job.payload.limit %} · next {{ job.payload.limit }}{% else %} · continue until done{% endif %}
+    {% if job.payload.bucket %} · {{ job.payload.bucket }}{% endif %}
+</p>
+{% endif %}
+{% if job.status == 'running' or job.status == 'pending' %}
+<p class="muted">This page refreshes every 3 seconds while the job is running.</p>
+{% endif %}
+{% if job.error %}
+<p class="error" role="alert">{{ job.error }}</p>
+{% endif %}
+{% if job.log_text %}
+<pre class="log">{{ job.log_text }}</pre>
+{% endif %}
+<p><a href="/jobs">All jobs</a></p>
+{% else %}
+<h1>Jobs</h1>
+<p class="lede">Ingest, restore, verify, dates, and thumbnails run here so the rest of the vault stays usable.</p>
+{% endif %}
+
+{% if jobs %}
+<table class="files">
+    <thead>
+        <tr>
+            <th>ID</th>
+            <th>Type</th>
+            <th>Status</th>
+            <th>Progress</th>
+            <th>Started</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for j in jobs %}
+        <tr>
+            <td><a href="/jobs/{{ j.id }}">#{{ j.id }}</a></td>
+            <td>{{ j.type }}</td>
+            <td>{{ j.status }}</td>
+            <td>{% if j.progress_total %}{{ j.progress_done }}/{{ j.progress_total }}{% else %}—{% endif %}</td>
+            <td class="muted">{{ j.started_at or j.created_at or "" }}</td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+{% elif not job %}
+<p class="muted">No jobs yet.</p>
+{% endif %}
+{% endblock %}

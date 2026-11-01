@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sign in · StorageInsights</title>
+    <link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+    <main class="wrap narrow">
+        <h1>StorageInsights</h1>
+        <p class="lede">This vault is password-protected on the local network.</p>
+        {% if error %}
+        <p class="error" role="alert">{{ error }}</p>
+        {% endif %}
+        <form method="post" action="/login" class="login">
+            <label for="password">Password</label>
+            <input id="password" name="password" type="password" required autofocus>
+            <button type="submit">Sign in</button>
+        </form>
+    </main>
+</body>
+</html>

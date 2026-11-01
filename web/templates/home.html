@@ -1,0 +1,114 @@
+{% extends "layout.html" %}
+{% block title %}Home · StorageInsights{% endblock %}
+{% block content %}
+<section class="hero">
+    <h1>Your vault</h1>
+    <p class="lede">
+        {{ overview.files_fmt }} files across
+        {{ overview.drives_fmt }} drives.
+        {{ overview.unique_fmt }} stored uniquely;
+        {{ overview.saved_fmt }} saved by not uploading copies twice.
+    </p>
+    <form class="search" method="get" action="/search" role="search">
+        <label class="sr-only" for="q">Search files</label>
+        <input id="q" name="q" type="search" placeholder="Search across every drive…" autocomplete="off">
+        <button type="submit">Search</button>
+    </form>
+    <p class="hero-links">
+        <a href="/library">Library</a>
+        <span aria-hidden="true">·</span>
+        <a href="/timeline">Timeline</a>
+    </p>
+
+</section>
+
+<section class="health" aria-label="Vault health">
+    <article class="health-{{ health.backup.state }}">
+        <h2>Catalog backup</h2>
+        <p>{{ health.backup.summary }}</p>
+        <p class="muted">
+            {{ health.db_size_fmt }} local
+            {% if health.backup.backed_mtime_fmt %} · last backup {{ health.backup.backed_mtime_fmt }}{% endif %}
+        </p>
+        <p><a href="/settings">Settings</a></p>
+    </article>
+    <article class="health-{{ health.verify.state }}">
+        <h2>B2 verify</h2>
+        <p>{{ health.verify.summary }}</p>
+        {% if health.verify.at_fmt %}
+        <p class="muted">{{ health.verify.at_fmt }} UTC</p>
+        {% endif %}
+        <p><a href="/settings">Run a check</a></p>
+    </article>
+    <article class="health-{{ 'ok' if health.bucket_set else 'warn' }}">
+        <h2>Bucket</h2>
+        {% if health.bucket_set %}
+        <p><code>{{ health.bucket }}</code></p>
+        {% else %}
+        <p>No B2 bucket configured.</p>
+        {% endif %}
+        {% if health.restore_dest %}
+        <p class="muted">Restore to {{ health.restore_dest }}</p>
+        {% endif %}
+        <p><a href="/settings">Change</a></p>
+    </article>
+</section>
+
+<section class="stats" aria-label="Vault totals">
+    <article>
+        <h2>{{ overview.files_fmt }}</h2>
+        <p>Files cataloged</p>
+    </article>
+    <article>
+        <h2>{{ overview.drives_fmt }}</h2>
+        <p>Drives</p>
+    </article>
+    <article>
+        <h2>{{ overview.logical_fmt }}</h2>
+        <p>Logical size</p>
+    </article>
+    <article>
+        <h2>{{ overview.saved_fmt }}</h2>
+        <p>Dedup savings</p>
+    </article>
+</section>
+
+<section>
+    <h2 class="section-title">Drives</h2>
+    {% if overview.drive_cards %}
+    <ul class="drive-grid">
+        {% for drive in overview.drive_cards %}
+        <li>
+            <a class="card" href="/browse?drive={{ drive.name | urlencode }}">
+                <h3>{{ drive.name }}</h3>
+                <p>{{ drive.files_fmt }} files · {{ drive.logical_fmt }}</p>
+                <p class="muted">{{ drive.unique_fmt }} unique · {{ drive.saved_fmt }} saved</p>
+            </a>
+        </li>
+        {% endfor %}
+    </ul>
+    {% else %}
+    <p>No files in the catalog yet. <a href="/ingest">Ingest a drive</a> to get started.</p>
+    {% endif %}
+</section>
+
+<section>
+    <h2 class="section-title">Recent jobs</h2>
+    {% if jobs %}
+    <ul class="folder-list">
+        {% for j in jobs %}
+        <li>
+            <a href="/jobs/{{ j.id }}">#{{ j.id }} {{ j.type }}</a>
+            <span class="badge">{{ j.status }}</span>
+            {% if j.progress_total %}
+            <span class="muted">{{ j.progress_done }}/{{ j.progress_total }}</span>
+            {% endif %}
+        </li>
+        {% endfor %}
+    </ul>
+    <p><a href="/jobs">All jobs</a></p>
+    {% else %}
+    <p class="muted">No jobs yet. <a href="/ingest">Start an ingest</a> or restore a folder.</p>
+    {% endif %}
+</section>
+{% endblock %}

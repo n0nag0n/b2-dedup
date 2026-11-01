@@ -1,0 +1,213 @@
+{% extends "layout.html" %}
+{% block title %}Ingest · StorageInsights{% endblock %}
+{% block content %}
+<h1>Ingest</h1>
+<p class="lede">
+    Plug in a disk and pick it here. We skip junk such as
+    <code>node_modules</code> and AppleDouble <code>._*</code> files, keep
+    <code>.git</code> in the backup, and skip hashing anything whose size and
+    date already match the catalog.
+</p>
+
+{% if not listing %}
+<section>
+    <h2 class="section-title">Plugged-in disks</h2>
+    <p class="muted">
+        Watching {{ targets.scan.os }} locations:
+        {% for place in targets.scan.places %}<code>{{ place }}</code>{% if not loop.last %}, {% endif %}{% endfor %}.
+        Refresh this page after you plug a disk in.
+    </p>
+    {% if targets.disks %}
+    <ul class="drive-grid">
+        {% for v in targets.disks %}
+        <li>
+            <article class="card volume-card">
+                <h3>{{ v.name }}</h3>
+                {% if v.total_fmt %}
+                <p>{{ v.total_fmt }}{% if v.free_fmt %} · {{ v.free_fmt }} free{% endif %}</p>
+                {% endif %}
+                <p class="muted"><code class="wrap">{{ v.path }}</code></p>
+                {% if v.in_catalog %}
+                <p><span class="badge">Already in the vault as {{ v.suggested_drive }}</span></p>
+                {% endif %}
+                <p class="actions">
+                    <a class="button" href="/ingest?path={{ v.path | urlencode }}">Use this disk</a>
+                </p>
+            </article>
+        </li>
+        {% endfor %}
+    </ul>
+    {% else %}
+    <p>No removable disks found right now. Plug one in, or add its folder below.</p>
+    {% endif %}
+</section>
+
+<section>
+    <h2 class="section-title">Folders you added</h2>
+    {% if targets.folders %}
+    <ul class="drive-grid">
+        {% for v in targets.folders %}
+        <li>
+            <article class="card volume-card">
+                <h3>{{ v.name }}</h3>
+                <p class="muted"><code class="wrap">{{ v.path }}</code></p>
+                {% if v.in_catalog %}
+                <p><span class="badge">Already in the vault as {{ v.suggested_drive }}</span></p>
+                {% endif %}
+                <p class="actions">
+                    <a class="button" href="/ingest?path={{ v.path | urlencode }}">Use this folder</a>
+                </p>
+            </article>
+        </li>
+        {% endfor %}
+    </ul>
+    {% else %}
+    <p class="muted">None yet. Use this when a disk is mounted somewhere we do not watch automatically.</p>
+    {% endif %}
+    <form method="post" action="/ingest/add-folder" class="restore-form">
+        <label>Folder on this computer
+            <input name="folder" type="text" required placeholder="/media/you/OldSeagate">
+        </label>
+        <p class="hint">Paste the path of the disk or folder. You can remove extras later in Settings.</p>
+        <p class="actions">
+            <button type="submit">Add folder</button>
+        </p>
+    </form>
+</section>
+{% endif %}
+
+{% if listing %}
+<nav class="crumbs" aria-label="Breadcrumb">
+    {% if listing.parent or listing.path %}
+    <a href="{% if listing.parent %}/ingest?path={{ listing.parent | urlencode }}{% else %}/ingest{% endif %}">Up</a>
+    <span aria-hidden="true">·</span>
+    {% endif %}
+    {% for c in listing.crumbs %}
+        {% if not loop.last %}
+        <a href="{% if c.path %}/ingest?path={{ c.path | urlencode }}{% else %}/ingest{% endif %}">{{ c.label }}</a>
+        <span aria-hidden="true">/</span>
+        {% else %}
+        <span>{{ c.label }}</span>
+        {% endif %}
+    {% endfor %}
+</nav>
+<p class="muted"><code>{{ listing.abs_path }}</code></p>
+
+{% if listing.dirs %}
+<h2 class="section-title">Folders</h2>
+<ul class="folder-list">
+    {% for d in listing.dirs %}
+    <li><a href="/ingest?path={{ d.path | urlencode }}">{{ d.name }}</a></li>
+    {% endfor %}
+</ul>
+{% else %}
+<p class="muted">No subfolders here.</p>
+{% endif %}
+
+<h2 class="section-title">Ingest this folder</h2>
+<form method="get" action="/ingest/preview" class="restore-form">
+    <input type="hidden" name="path" value="{{ listing.path }}">
+    <label>Name in the vault
+        <input name="drive_name" type="text" required list="catalog-drives"
+               value="{{ drive_name or listing.suggested_drive }}"
+               placeholder="OldSeagate2008">
+    </label>
+    <datalist id="catalog-drives">
+        {% for d in catalog_drives %}
+        <option value="{{ d }}"></option>
+        {% endfor %}
+    </datalist>
+    <p class="hint">This is the label on Home and the folder name in B2. Pick a new name for a new disk.</p>
+    {% if existing_drive or (drive_name or listing.suggested_drive) in catalog_drives %}
+    <p class="warn" role="status">
+        A drive named
+        <strong>{{ drive_name or listing.suggested_drive }}</strong>
+        is already in the catalog. This ingest will add files to that drive;
+        unchanged files are skipped.
+    </p>
+    {% endif %}
+    <label>Disk root
+        <input name="drive_root" type="text"
+               value="{{ drive_root if drive_root else listing.suggested_root }}">
+    </label>
+    <p class="hint">Leave this as the disk itself unless you know you want a different path prefix.</p>
+    <label>Mode
+        <select name="mode">
+            <option value="upload" {% if mode|default('upload') == 'upload' %}selected{% endif %}>Upload (hash + B2)</option>
+            <option value="dry-run" {% if mode|default('') == 'dry-run' %}selected{% endif %}>Dry run (no writes)</option>
+            <option value="scan-only" {% if mode|default('') == 'scan-only' %}selected{% endif %}>Scan only (catalog, no upload)</option>
+        </select>
+    </label>
+    <label>B2 bucket
+        <input name="bucket" type="text" value="{{ bucket }}" placeholder="required unless scan-only">
+    </label>
+    <label>Workers
+        <input name="workers" type="number" min="1" max="64" value="{{ workers }}">
+    </label>
+    <p class="actions">
+        <button type="submit">Preview this tree</button>
+    </p>
+</form>
+
+{% if preview %}
+<section class="preview-panel" aria-label="Ingest preview">
+    <h2 class="section-title">Preview</h2>
+    {% if existing_drive %}
+    <p class="warn" role="status">
+        Adding to existing drive <strong>{{ drive_name }}</strong>.
+        {{ "{:,}".format(preview.already_tracked) }} files already match the catalog.
+    </p>
+    {% endif %}
+    <p class="lede">
+        This tree has {{ "{:,}".format(preview.total_files) }} files;
+        we will skip {{ "{:,}".format(preview.junk_skipped) }} junk paths.
+        {{ "{:,}".format(preview.already_tracked) }} already match the catalog
+        (same path, size, and date).
+        About {{ preview.new_bytes_fmt }} in
+        {{ "{:,}".format(preview.new_or_changed) }} new or changed files
+        still need hashing — dedup may shrink that after SHA-256.
+    </p>
+    <section class="stats" aria-label="Preview totals">
+        <article>
+            <h2>{{ "{:,}".format(preview.total_files) }}</h2>
+            <p>Files in tree</p>
+        </article>
+        <article>
+            <h2>{{ "{:,}".format(preview.junk_skipped) }}</h2>
+            <p>Junk skipped</p>
+        </article>
+        <article>
+            <h2>{{ "{:,}".format(preview.already_tracked) }}</h2>
+            <p>Already tracked</p>
+        </article>
+        <article>
+            <h2>{{ preview.new_bytes_fmt }}</h2>
+            <p>New or changed</p>
+        </article>
+    </section>
+    <form method="post" action="/ingest/start" class="restore-form">
+        <input type="hidden" name="path" value="{{ listing.path }}">
+        <input type="hidden" name="drive_name" value="{{ drive_name }}">
+        <input type="hidden" name="drive_root" value="{{ drive_root }}">
+        <input type="hidden" name="mode" value="{{ mode }}">
+        <input type="hidden" name="workers" value="{{ workers }}">
+        <input type="hidden" name="bucket" value="{{ bucket }}">
+        <p class="actions">
+            <button type="submit">Start {{ mode }} job</button>
+        </p>
+    </form>
+</section>
+{% endif %}
+
+<details class="hint">
+    <summary>What counts as junk</summary>
+    <p>Never hashed or uploaded: folders named
+        {% for name in junk_dirs %}<code>{{ name }}</code>{% if not loop.last %}, {% endif %}{% endfor %},
+        files named
+        {% for name in junk_files %}<code>{{ name }}</code>{% if not loop.last %}, {% endif %}{% endfor %},
+        and AppleDouble <code>._*</code> / Spotlight files.
+        <code>.git</code> and <code>.hg</code> stay in the backup and are hidden from default search.
+    </p>
+</details>
+{% endif %}
+{% endblock %}

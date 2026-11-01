@@ -1,36 +1,51 @@
-# B2 Dedup — Agent Instructions
+# StorageInsights — Agent Instructions
 
 Guidance for coding agents working in this repository. Prefer small, behavior-preserving changes. Do not invent new product features unless asked.
 
+The product name is **StorageInsights**. The git repo may still be `b2-dedup`.
+
 ## Project overview
 
-Python CLI + Streamlit web UI that backs up files to Backblaze B2 with content-addressed deduplication (SHA-256). Unique files upload once; duplicates become lightweight `.b2ptr` JSON pointers. Local SQLite (`data/b2_dedup.db`) tracks every file occurrence.
+Home-network vault for a Backblaze B2 backup with content-addressed deduplication (SHA-256). Unique files upload once; duplicates become lightweight `.b2ptr` JSON pointers. Local SQLite (`data/b2_dedup.db`) tracks every file occurrence. The web UI is FastAPI + Jinja + Alpine (no JS build step). Streamlit (`gui/`, `serve --legacy`) remains until leftover sidebar-only extras are gone; ingest, restore, verify, and Settings live in the new app.
 
 ## Layout
 
 ```
-b2_dedup.py          # CLI: upload | download | serve; B2Manager; workers
-b2_gui.py            # Streamlit entry (thin assembler)
+b2_dedup.py          # thin CLI: serve | upload/ingest | download/restore | verify | dates | thumbs
+core/                # B2, hash, ingest, restore, verify, catalog backup, junk rules, time, thumbs
+web/                 # FastAPI + Jinja templates + vendored Alpine
 file_utils.py        # mtime/ctime/atime, mime, file category
-gui/                 # Streamlit UI
-  state.py           # session_state + basket helpers
-  config.py          # data/b2_gui_config.json
-  db.py              # shared SQL helpers
-  components/        # sidebar, basket bar, group actions
-  tabs/              # browse, search, upload
+gui/                 # legacy Streamlit UI (serve --legacy)
+b2_gui.py            # Streamlit entry
 migrations/          # numbered schema migrations (runner.py)
-requirements.txt     # b2sdk, tqdm (streamlit+pandas via Dockerfile / manual install)
+.notes/overhaul-plan.md
 ```
 
 ## Commands
 
 ```bash
+python b2_dedup.py serve [--port 8501]          # StorageInsights
+python b2_dedup.py serve --legacy [--port 8501] # previous Streamlit UI
+
+Web: GET /search (all drives, junk hidden), GET /browse, GET /file/{id},
+GET /library (file grid + type filter), GET /timeline (moment cards), GET /moment,
+restore set at /restore-set, ingest wizard at /ingest (preview then job),
+jobs at /jobs/{id}, Settings at /settings (bucket, catalog backup, verify,
+date backfill, thumbnails). Home shows catalog-backup and last-verify health
+(no B2 call on load).
+`python b2_dedup.py dates` fills `best_taken_at` (folder + mtime; no B2).
+`python b2_dedup.py thumbs [--limit N]` builds JPEG previews from B2.
+FTS: `files_fts MATCH ?` via `id IN (SELECT rowid FROM files_fts WHERE …)`.
+Do not use SQL LIKE `'._%'` for AppleDouble — `_` is a wildcard; use GLOB.
 python b2_dedup.py upload /path --drive-name NAME --bucket BUCKET [--scan-only] [--dry-run] [--workers N]
+python b2_dedup.py ingest …                     # alias for upload; same core.ingest as the web job
 python b2_dedup.py download REMOTE/ --dest /out --bucket BUCKET [--dry-run]
-python b2_dedup.py serve [--port 8501]
+python b2_dedup.py verify [--bucket BUCKET] [--sample 200] [--full]
+python b2_dedup.py dates [--limit N]
+python b2_dedup.py thumbs [--bucket BUCKET] [--limit N]
 ```
 
-Docker: `cp .env.example .env` then `docker compose up --build`. Host data is `./data` → `/app/data`. Optional `HOST_DRIVES_PATH` mounts into `/host_drives/` for GUI uploads.
+Run with a venv, not Docker: `python3 -m venv venv && source venv/bin/activate && pip install -r requirements.txt && python b2_dedup.py serve`. Ingest lists OS mount points; extra folders live in Settings (`ingest_extra_roots` in `data/b2_gui_config.json`).
 
 ## Paths & env
 
@@ -40,6 +55,7 @@ Docker: `cp .env.example .env` then `docker compose up --build`. Host data is `.
 | DB | `data/b2_dedup.db` |
 | GUI config | `data/b2_gui_config.json` |
 | File-count cache | `data/.b2_dedup_cache.json` |
+| Extra ingest folders | `ingest_extra_roots` in `data/b2_gui_config.json` |
 | Pointer extension | `.b2ptr` |
 | Remote DB backup | `__b2_dedup_metadata__/b2_dedup.db` |
 
@@ -47,7 +63,7 @@ Credentials (in order): `B2_KEY_ID` + `B2_APPLICATION_KEY` env vars, then b2sdk 
 
 ## Public surface to preserve
 
-- CLI subcommands and flags for `upload` / `download` / `serve`
+- CLI subcommands and flags for `upload` / `download` / `serve` / `verify`
 - Pointer JSON shape (`type`, `version`, `original_hash`, `original_path`, `pointer_created`)
 - Remote naming: originals at `{drive}/{relpath}`, pointers as `{path}.b2ptr`
 - Credential resolution order above
