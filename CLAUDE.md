@@ -14,7 +14,6 @@ A home-network vault (product name **StorageInsights**) for deduplicating backup
 | `file_utils.py` | File metadata extraction (mtime/ctime/atime, mime type, category) |
 | `gui/` | Legacy Streamlit UI (`serve --legacy`) |
 | `migrations/` | SQLite schema migrations applied by `init_db()` |
-| `.notes/overhaul-plan.md` | Rebuild plan |
 | `requirements.txt` | `b2sdk`, `tqdm`, FastAPI stack. Streamlit + pandas are optional for `serve --legacy` |
 
 ## Running the project

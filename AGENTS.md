@@ -18,7 +18,6 @@ file_utils.py        # mtime/ctime/atime, mime, file category
 gui/                 # legacy Streamlit UI (serve --legacy)
 b2_gui.py            # Streamlit entry
 migrations/          # numbered schema migrations (runner.py)
-.notes/overhaul-plan.md
 ```
 
 ## Commands

@@ -1,6 +1,6 @@
 """Ingest-skip vs search-hide rules for noise files.
 
-Two policies (see .notes/overhaul-plan.md):
+Two policies:
 - Ingest skip: never hash/upload (node_modules, venv, Mac resource forks, …).
 - Search hide: keep in the backup (including .git/.hg) but hide from default search.
 
