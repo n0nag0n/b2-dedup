@@ -1,6 +1,7 @@
 """Catalog queries for Home, Search, Browse, Inspector, and restore."""
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 from core.db import connect
@@ -157,16 +158,26 @@ def get_file_types() -> list[str]:
     return [r["file_type"] for r in rows]
 
 
+# unicode61 indexes letters, numbers, and underscore. The query parser rejects
+# other characters as syntax ("." in dice1.png, "-" in file-name), even though
+# the index stores them as word breaks.
+_FTS_TOKEN_RE = re.compile(r"\w+")
+
+
 def _fts_query(raw: str) -> str:
     raw = raw.strip()
     if not raw:
         return ""
-    special = set('*"')
-    if any(c in raw for c in special):
+    # A quote or star is an explicit FTS expression; pass it through.
+    if any(c in raw for c in '*"'):
         return raw
-    # Token prefix, not a quoted phrase prefix — `"foo" *` is far too wide
-    # on a million-row FTS index and makes COUNT(*) crawl.
-    return f"{raw}*"
+    tokens = _FTS_TOKEN_RE.findall(raw)
+    if not tokens:
+        return ""
+    # Prefix the last token only. A quoted phrase plus a bare "*" matches
+    # every row and makes the search crawl.
+    tokens[-1] = tokens[-1] + "*"
+    return " ".join(tokens)
 
 
 def search_files(
@@ -217,10 +228,16 @@ def search_files(
         params.append(str(year))
 
     if q:
-        conditions.append(
-            "f.id IN (SELECT rowid FROM files_fts WHERE files_fts MATCH ?)"
-        )
-        params.append(_fts_query(q))
+        fts = _fts_query(q)
+        if fts:
+            conditions.append(
+                "f.id IN (SELECT rowid FROM files_fts WHERE files_fts MATCH ?)"
+            )
+            params.append(fts)
+        else:
+            # Punctuation-only input has no indexed tokens. Match nothing
+            # instead of sending an empty FTS expression.
+            conditions.append("1 = 0")
 
     where = (" WHERE " + " AND ".join(conditions)) if conditions else ""
 
