@@ -30,7 +30,7 @@
                 Prepare ZIP download
             </button>
         </form>
-        <a class="button" href="/restore-set/download.zip">Stream it instead</a>
+        <a class="button secondary" href="/restore-set/download.zip">Stream it instead</a>
         {% endif %}
     </div>
 
@@ -50,17 +50,18 @@
     {% endif %}
 
     <p class="muted">
-        {{ bag.size_fmt }} selected · {{ disk_free }} free on the server
-        {% if not disk_ok %}<span class="error">(not enough room to prepare {{ bag.size_fmt }})</span>{% endif %}.
+        {{ bag.size_fmt }} selected · {{ disk_free }} free on the server{% if not disk_ok %} <span class="error">(not enough room to prepare {{ bag.size_fmt }})</span>{% endif %}.
         Limit: {{ limits.max_files }} files / {{ limits.max_bytes }} per download.
     </p>
     {% endif %}
 {% endif %}
 
 {% if bag.count %}
-<form method="post" action="/restore-set/clear" class="inline">
-    <button type="submit" class="secondary">Clear set</button>
-</form>
+<div class="actions">
+    <form method="post" action="/restore-set/clear" class="inline">
+        <button type="submit" class="secondary">Clear set</button>
+    </form>
+</div>
 
 <h2 class="section-title">Files</h2>
 <ul class="copy-list">

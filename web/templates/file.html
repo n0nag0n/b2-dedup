@@ -26,7 +26,7 @@
     {% endif %}
 </dl>
 
-<p class="actions">
+<div class="actions">
     <a class="button" href="/download/{{ file.id }}">Download</a>
     {% if in_set %}
     <form method="post" action="/restore-set/remove" class="inline">
@@ -47,7 +47,7 @@
         <input type="hidden" name="next" value="{{ request.url }}">
         <button type="submit" class="secondary">Add containing folder</button>
     </form>
-</p>
+</div>
 
 <h2 class="section-title">Same content</h2>
 {% if copies.copies %}

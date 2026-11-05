@@ -4,6 +4,7 @@ from datetime import datetime, timedelta
 import pandas as pd
 import streamlit as st
 
+from core.catalog import fts_query
 from gui.db import get_db_connection, get_file_types, format_size
 from gui.components.group_actions import render_group_actions
 from gui.components.selection import render_file_table
@@ -144,11 +145,14 @@ def _build_query(
         ).fetchone()
         conn.close()
         if fts_exists:
-            base += " JOIN files_fts fts ON f.id = fts.rowid"
-            conditions.append("files_fts MATCH ?")
-            special = set('*"')
-            fts_q = search_query if any(c in search_query for c in special) else f'"{search_query}" *'
-            params.append(fts_q)
+            fts_q = fts_query(search_query)
+            if fts_q:
+                base += " JOIN files_fts fts ON f.id = fts.rowid"
+                conditions.append("files_fts MATCH ?")
+                params.append(fts_q)
+            else:
+                # Punctuation-only input has no indexed tokens.
+                conditions.append("1 = 0")
         else:
             conditions.append("f.file_path LIKE ?")
             params.append(f"%{search_query}%")

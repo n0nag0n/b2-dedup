@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import re
+import sqlite3
 from pathlib import Path
 
 from core.db import connect
@@ -161,22 +162,55 @@ def get_file_types() -> list[str]:
 # unicode61 indexes letters, numbers, and underscore. The query parser rejects
 # other characters as syntax ("." in dice1.png, "-" in file-name), even though
 # the index stores them as word breaks.
-_FTS_TOKEN_RE = re.compile(r"\w+")
+_FTS_TOKEN_RE = re.compile(r'"[^"]*"\*?|\w+\*?|\*')
+_FTS_OPERATORS = {"AND", "OR", "NOT", "NEAR"}
+# Errors raised by the FTS5 query parser (not by SQLite itself).
+_FTS_QUERY_ERRORS = (
+    "fts5: syntax error",
+    "unknown special query",
+    "unterminated string",
+)
 
 
-def _fts_query(raw: str) -> str:
-    raw = raw.strip()
+def fts_query(raw: str) -> str:
+    """Turn free-text input into a valid FTS5 MATCH expression.
+
+    unicode61 stores letters, numbers, and underscore as tokens; every other
+    character is a word break. Rebuild the expression from those tokens so
+    punctuation (the "." in ``dice*.png``, the "-" in ``file-name``) is never
+    parsed as FTS syntax. Quoted phrases and explicit ``*`` prefixes survive,
+    boolean operators are kept only between terms, and the last bare term gets
+    an implicit prefix ``*``.
+    """
+    raw = (raw or "").strip()
     if not raw:
         return ""
-    # A quote or star is an explicit FTS expression; pass it through.
-    if any(c in raw for c in '*"'):
-        return raw
-    tokens = _FTS_TOKEN_RE.findall(raw)
+    tokens: list[str] = []
+    for token in _FTS_TOKEN_RE.findall(raw):
+        # A lone "*" is not a valid FTS expression.
+        if token == "*":
+            continue
+        if not token.startswith('"'):
+            # "dice*" is a prefix term, "AND*" is still a boolean operator.
+            if token.endswith("*") and token[:-1] in _FTS_OPERATORS:
+                token = token[:-1]
+            if token in _FTS_OPERATORS:
+                # FTS5 has no leading operator; a dangling trailing one is a
+                # syntax error and gets dropped below.
+                if not tokens:
+                    continue
+                tokens.append(token)
+                continue
+        tokens.append(token)
+    while tokens and tokens[-1] in _FTS_OPERATORS:
+        tokens.pop()
     if not tokens:
         return ""
-    # Prefix the last token only. A quoted phrase plus a bare "*" matches
-    # every row and makes the search crawl.
-    tokens[-1] = tokens[-1] + "*"
+    # Prefix the last token only, and never a quoted phrase: a phrase plus a
+    # bare "*" matches every row and makes the search crawl.
+    last = tokens[-1]
+    if not last.startswith('"') and not last.endswith("*"):
+        tokens[-1] += "*"
     return " ".join(tokens)
 
 
@@ -228,7 +262,7 @@ def search_files(
         params.append(str(year))
 
     if q:
-        fts = _fts_query(q)
+        fts = fts_query(q)
         if fts:
             conditions.append(
                 "f.id IN (SELECT rowid FROM files_fts WHERE files_fts MATCH ?)"
@@ -255,6 +289,11 @@ def search_files(
     conn = connect(readonly=True)
     try:
         rows = conn.execute(select_sql, [*params, per_page + 1, offset]).fetchall()
+    except sqlite3.OperationalError as exc:
+        # Malformed user input should show no results, not a 500 page.
+        if not str(exc).startswith(_FTS_QUERY_ERRORS):
+            raise
+        rows = []
     finally:
         conn.close()
 
