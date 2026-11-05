@@ -11,6 +11,7 @@ DATA_DIR.mkdir(exist_ok=True)
 
 DB_PATH = DATA_DIR / "b2_dedup.db"
 THUMBS_DIR = DATA_DIR / "thumbs"
+EXPORTS_DIR = DATA_DIR / "exports"
 CACHE_PATH = DATA_DIR / ".b2_dedup_cache.json"
 GUI_CONFIG_PATH = DATA_DIR / "b2_gui_config.json"
 

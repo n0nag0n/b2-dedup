@@ -3,7 +3,16 @@ from fastapi import APIRouter, Form, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 
 from core import restore_set
-from core.config import get_bucket_name, get_restore_dest, set_restore_dest
+from core.catalog import format_size
+from core.config import (
+    get_bucket_name,
+    get_download_max_bytes,
+    get_download_max_files,
+    get_download_stream_threshold,
+    get_restore_dest,
+    set_restore_dest,
+)
+from core.download import estimated_export_need, forced_to_stream, free_disk_bytes, selection_error
 from core.jobs import enqueue
 from web.templating import page_vars, session_key, set_notice, templates
 
@@ -20,13 +29,26 @@ def _next_url(request: Request, nxt: str) -> str:
 @router.get("/restore-set", response_class=HTMLResponse)
 def restore_set_page(request: Request):
     key = session_key(request)
+    bag = restore_set.summary(key)
+    limits_error = selection_error(bag["count"], bag["size"])
+    need = estimated_export_need(bag["size"])
+    free = free_disk_bytes()
     return templates.TemplateResponse(
         "restore_set.html",
         page_vars(
             request,
-            bag=restore_set.summary(key),
+            bag=bag,
             restore_dest=get_restore_dest(),
             bucket=get_bucket_name(),
+            limits={
+                "max_files": f"{get_download_max_files():,}",
+                "max_bytes": format_size(get_download_max_bytes()),
+                "stream_threshold": format_size(get_download_stream_threshold()),
+            },
+            limits_error=limits_error,
+            force_stream=forced_to_stream(bag["size"]),
+            disk_free=format_size(free),
+            disk_ok=(not free or free >= need),
         ),
     )
 

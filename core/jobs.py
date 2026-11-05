@@ -157,6 +157,11 @@ def _run_job(job: dict) -> None:
 
         run_delete_drive_job(job)
         return
+    if job["type"] == "zip_export":
+        from core.download import run_zip_export_job
+
+        run_zip_export_job(job)
+        return
     if job["type"] == "dates":
         from core.library import run_dates_job
 

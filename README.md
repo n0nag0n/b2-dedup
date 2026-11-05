@@ -205,6 +205,13 @@ python b2_dedup.py serve [--port PORT]
 
 Opens StorageInsights at `http://localhost:8501` (or the given port). Home shows every drive, catalog totals, catalog-backup health, and the last B2 verify. Search is global. **Ingest** (`/ingest`) lists plugged-in disks, previews junk skips and already-tracked files, then starts a job. **Settings** (`/settings`) holds the bucket, restore destination, extra ingest folders, catalog backup/restore, and the verify job. Job logs live at `/jobs`.
 
+Downloading does not need a restore folder or a local copy of the vault:
+
+- Every row in Search and Browse, and every file page, has a **⬇ Download** link. It streams straight from B2 to the browser and resolves `.b2ptr` duplicates, so a remote user gets the real file.
+- The **Restore set** page downloads the whole selection as a ZIP. Selections at or below the stream threshold (500 MB by default) can be *prepared* as a background job: progress, a download link, and resume support. Larger selections stream instead and use no server disk.
+- Limits are in **Settings → Browser downloads**: 1,000 files and 5 GB per download by default, plus how long prepared ZIPs are kept. Single-file downloads are never capped.
+- Prepared archives are written to `data/exports/` and cleaned up automatically.
+
 Optional LAN password: set `VAULT_PASSWORD` in `.env`. Leave it empty to keep the UI open on the local network.
 
 ```bash

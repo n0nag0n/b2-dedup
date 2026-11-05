@@ -4,20 +4,60 @@
 <h1>Restore set</h1>
 <p class="lede">
     {{ bag.count_fmt }} file(s) · {{ bag.size_fmt }} uncompressed.
-    Restore writes to a local folder (not a ZIP in the browser).
+    Downloads go straight from B2 to your browser, so this works the same
+    whether you are at the vault or on another machine.
 </p>
 
 {% if bag.count %}
-<form method="post" action="/restore-set/start" class="restore-form">
-    <label>Destination folder
-        <input name="dest" type="text" value="{{ restore_dest }}" placeholder="/path/to/restore" required>
-    </label>
-    <p class="muted">Bucket: <code>{{ bucket or "not configured" }}</code></p>
-    <p class="actions">
-        <button type="submit">Start restore</button>
+    {% if limits_error %}
+    <p class="error" role="alert">{{ limits_error }}</p>
+    <p class="muted">
+        Limit: {{ limits.max_files }} files / {{ limits.max_bytes }} per download.
+        Change it in <a href="/settings#downloads">Settings</a>.
     </p>
-</form>
+    {% else %}
+    <div class="actions">
+        {% if force_stream %}
+        <a class="button" href="/restore-set/download.zip">Download ZIP now</a>
+        <form method="post" action="/restore-set/export" class="inline">
+            <button type="submit" class="secondary" {% if not disk_ok %}disabled title="Not enough free disk space"{% endif %}>
+                Prepare a copy on the server
+            </button>
+        </form>
+        {% else %}
+        <form method="post" action="/restore-set/export" class="inline">
+            <button type="submit" {% if not disk_ok %}disabled title="Not enough free disk space"{% endif %}>
+                Prepare ZIP download
+            </button>
+        </form>
+        <a class="button" href="/restore-set/download.zip">Stream it instead</a>
+        {% endif %}
+    </div>
 
+    {% if force_stream %}
+    <p class="warn">
+        Over {{ limits.stream_threshold }}, so this ZIP streams instead of
+        being staged on the server's disk. Keep this tab open: a streamed
+        download cannot resume, and starting over means downloading
+        everything again.
+    </p>
+    {% else %}
+    <p class="hint">
+        A prepared ZIP is built as a background job, shows progress, and can
+        resume if the connection drops. It is kept for a while under
+        <code>data/exports/</code> and cleaned up automatically.
+    </p>
+    {% endif %}
+
+    <p class="muted">
+        {{ bag.size_fmt }} selected · {{ disk_free }} free on the server
+        {% if not disk_ok %}<span class="error">(not enough room to prepare {{ bag.size_fmt }})</span>{% endif %}.
+        Limit: {{ limits.max_files }} files / {{ limits.max_bytes }} per download.
+    </p>
+    {% endif %}
+{% endif %}
+
+{% if bag.count %}
 <form method="post" action="/restore-set/clear" class="inline">
     <button type="submit" class="secondary">Clear set</button>
 </form>
@@ -32,14 +72,36 @@
             <button type="submit" class="linkish" title="Remove">✕</button>
         </form>
         <a href="/file/{{ f.id }}">{{ f.drive_name }}/{{ f.file_path }}</a>
+        <a href="/download/{{ f.id }}" class="linkish" title="Download this file">⬇</a>
         <span class="muted">{{ f.size_fmt }}</span>
     </li>
     {% endfor %}
 </ul>
 {% if bag.preview_truncated %}
-<p class="muted">Showing the first {{ bag.preview | length }} of {{ bag.count_fmt }}. The full set will still restore.</p>
+<p class="muted">Showing the first {{ bag.preview | length }} of {{ bag.count_fmt }}. The whole set still downloads.</p>
 {% endif %}
 {% else %}
 <p>Empty. Add files from Search or Browse, or use ＋ on a folder.</p>
 {% endif %}
+
+<section>
+    <h2 class="section-title">Restore to a folder instead</h2>
+    <p class="hint">
+        This writes the files onto the machine running StorageInsights — useful
+        when you are sitting at the vault itself, not for a remote browser.
+    </p>
+    {% if bag.count %}
+    <form method="post" action="/restore-set/start" class="restore-form">
+        <label>Destination folder on the server
+            <input name="dest" type="text" value="{{ restore_dest }}" placeholder="/path/to/restore" required>
+        </label>
+        <p class="muted">Bucket: <code>{{ bucket or "not configured" }}</code></p>
+        <p class="actions">
+            <button type="submit" class="secondary">Start restore job</button>
+        </p>
+    </form>
+    {% else %}
+    <p class="muted">Add files first.</p>
+    {% endif %}
+</section>
 {% endblock %}

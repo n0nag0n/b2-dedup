@@ -12,11 +12,19 @@ from core.library import dates_status
 from core.config import (
     add_ingest_extra_root,
     get_bucket_name,
+    get_download_expiry_hours,
+    get_download_max_bytes,
+    get_download_max_files,
+    get_download_stream_threshold,
     get_ingest_extra_roots,
     get_restore_dest,
     get_workers,
     remove_ingest_extra_root,
     set_bucket_name,
+    set_download_expiry_hours,
+    set_download_max_bytes,
+    set_download_max_files,
+    set_download_stream_threshold,
     set_restore_dest,
     set_workers,
 )
@@ -47,6 +55,17 @@ def _library_view() -> dict:
     }
 
 
+def _downloads_view() -> dict:
+    max_bytes = get_download_max_bytes()
+    threshold = get_download_stream_threshold()
+    return {
+        "max_files": get_download_max_files(),
+        "max_gb": round(max_bytes / 1024 ** 3, 2),
+        "stream_threshold_mb": round(threshold / 1024 ** 2),
+        "expiry_hours": get_download_expiry_hours(),
+    }
+
+
 def _settings_page(request: Request, **extra):
     health = get_vault_health()
     return templates.TemplateResponse(
@@ -61,6 +80,7 @@ def _settings_page(request: Request, **extra):
             bucket=get_bucket_name(),
             restore_dest=get_restore_dest(),
             workers=get_workers(),
+            downloads=_downloads_view(),
             sample_size=DEFAULT_SAMPLE_SIZE,
             junk_dirs=sorted(INGEST_SKIP_DIR_NAMES),
             junk_files=sorted(INGEST_SKIP_FILE_NAMES),
@@ -98,6 +118,39 @@ def settings_save(
     set_workers(workers)
     set_notice(request, "Settings saved.")
     return RedirectResponse("/settings", status_code=303)
+
+
+@router.post("/settings/downloads")
+def settings_downloads(
+    request: Request,
+    max_files: str = Form("1000"),
+    max_gb: str = Form("5"),
+    stream_threshold_mb: str = Form("500"),
+    expiry_hours: str = Form("24"),
+):
+    try:
+        files = int(max_files)
+    except (TypeError, ValueError):
+        files = get_download_max_files()
+    try:
+        gb = float(max_gb)
+    except (TypeError, ValueError):
+        gb = get_download_max_bytes() / 1024 ** 3
+    try:
+        threshold = float(stream_threshold_mb)
+    except (TypeError, ValueError):
+        threshold = get_download_stream_threshold() / 1024 ** 2
+    try:
+        hours = int(expiry_hours)
+    except (TypeError, ValueError):
+        hours = get_download_expiry_hours()
+
+    set_download_max_files(files)
+    set_download_max_bytes(int(gb * 1024 ** 3))
+    set_download_stream_threshold(int(threshold * 1024 ** 2))
+    set_download_expiry_hours(hours)
+    set_notice(request, "Download limits saved.")
+    return RedirectResponse("/settings#downloads", status_code=303)
 
 
 @router.post("/settings/ingest-root/add")

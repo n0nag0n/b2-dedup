@@ -165,9 +165,13 @@ def load_tracked_signatures(drive_name: str) -> dict[str, tuple]:
 
     conn = connect(readonly=True)
     try:
+        # ORDER BY file_path keeps the planner on the (drive_name, file_path)
+        # index. Without it SQLite picks idx_files_overview (drive_name,
+        # is_original, size), which orders the rows by is_original/size and turns
+        # the table reads for this drive-wide scan random.
         rows = conn.execute(
             "SELECT id, hash, file_path, size, file_mtime, is_original, upload_path "
-            "FROM files WHERE drive_name = ?",
+            "FROM files WHERE drive_name = ? ORDER BY file_path",
             (drive_name,),
         ).fetchall()
     finally:

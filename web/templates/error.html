@@ -1,0 +1,11 @@
+{% extends "layout.html" %}
+{% block title %}Download problem · StorageInsights{% endblock %}
+{% block content %}
+<h1>Download problem</h1>
+<p class="lede">{{ message }}</p>
+<p class="actions">
+    <a href="/restore-set">Restore set</a>
+    <a href="/search">Search</a>
+    <a href="/settings#downloads">Download limits</a>
+</p>
+{% endblock %}

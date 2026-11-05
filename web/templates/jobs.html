@@ -41,6 +41,21 @@
     {% if job.payload.limit %} · next {{ job.payload.limit }}{% else %} · continue until done{% endif %}
     {% if job.payload.bucket %} · {{ job.payload.bucket }}{% endif %}
 </p>
+{% elif job.type == 'zip_export' and job.payload %}
+<p class="muted">
+    Prepared ZIP download
+    {% if job.payload.bucket %} · {{ job.payload.bucket }}{% endif %}
+</p>
+{% endif %}
+{% if job.status == 'done' and export %}
+<div class="actions">
+    {% if export.exists %}
+    <a class="button" href="{{ export.url }}">Download ZIP{% if export.size_fmt %} ({{ export.size_fmt }}){% endif %}</a>
+    <span class="muted">Kept on the server for a while; download it before it expires.</span>
+    {% else %}
+    <span class="muted">The prepared ZIP has expired. Build it again from the restore set.</span>
+    {% endif %}
+</div>
 {% endif %}
 {% if job.status == 'running' or job.status == 'pending' %}
 <p class="muted">This page refreshes every 3 seconds while the job is running.</p>

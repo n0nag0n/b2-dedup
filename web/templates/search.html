@@ -89,6 +89,7 @@
                     <button type="submit" class="linkish" title="Add to restore set">＋</button>
                 </form>
                 {% endif %}
+                <a href="/download/{{ f.id }}" class="linkish" title="Download this file">⬇</a>
             </td>
             <td><span class="badge">{{ f.drive_name }}</span></td>
             <td><a href="/file/{{ f.id }}">{{ f.file_path }}</a></td>

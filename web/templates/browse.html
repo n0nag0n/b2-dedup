@@ -93,6 +93,7 @@
                     <button type="submit" class="linkish">＋</button>
                 </form>
                 {% endif %}
+                <a href="/download/{{ f.id }}" class="linkish" title="Download this file">⬇</a>
             </td>
             <td><a href="/file/{{ f.id }}">{{ f.name }}</a></td>
             <td class="num">{{ f.size_fmt }}</td>

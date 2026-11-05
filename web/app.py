@@ -11,6 +11,7 @@ from starlette.middleware.sessions import SessionMiddleware
 
 from core.catalog import get_vault_overview
 from core.db import init_db
+from core.download import cleanup_exports
 from core.health import get_vault_health
 from core.jobs import recent_jobs, start_worker
 from web.auth import password_required, vault_password
@@ -29,6 +30,10 @@ def create_app() -> FastAPI:
     @app.on_event("startup")
     def _startup():
         init_db()
+        try:
+            cleanup_exports()
+        except Exception:  # noqa: BLE001 - cleanup must never block startup
+            pass
         start_worker()
 
     @app.middleware("http")

@@ -141,17 +141,12 @@ def download_action(args):
 
 def restore_one(b2: B2Manager, rec: dict, dest_root: Path) -> str:
     """Stream one catalog row to dest_root / drive / path. Returns status label."""
+    from core.download import resolve_source
+
     dest = dest_root / rec["drive_name"] / rec["file_path"]
     dest.parent.mkdir(parents=True, exist_ok=True)
-    remote = sanitize_b2_path(f"{rec['drive_name']}/{rec['file_path']}")
-    if rec.get("is_original"):
-        final = rec.get("upload_path") or remote
-        b2.download_file_to_path(final, dest)
-        return "downloaded"
-    ptr_path = remote + POINTER_EXTENSION
-    pointer = json.loads(b2.download_file_content(ptr_path).decode("utf-8"))
-    b2.download_file_to_path(pointer["original_path"], dest)
-    return "pointer_resolved"
+    b2.download_file_to_path(resolve_source(b2, rec), dest)
+    return "downloaded" if rec.get("is_original") else "pointer_resolved"
 
 
 def run_restore_job(job: dict) -> None:

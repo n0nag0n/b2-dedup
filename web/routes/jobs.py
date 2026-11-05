@@ -2,6 +2,7 @@
 from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse
 
+from core.download import export_status
 from core.jobs import get_job, recent_jobs
 from web.templating import page_vars, templates
 
@@ -12,7 +13,7 @@ router = APIRouter()
 def jobs_index(request: Request):
     return templates.TemplateResponse(
         "jobs.html",
-        page_vars(request, jobs=recent_jobs(20), job=None),
+        page_vars(request, jobs=recent_jobs(20), job=None, export=None),
     )
 
 
@@ -27,5 +28,5 @@ def job_detail(request: Request, job_id: int):
         )
     return templates.TemplateResponse(
         "jobs.html",
-        page_vars(request, jobs=recent_jobs(20), job=job),
+        page_vars(request, jobs=recent_jobs(20), job=job, export=export_status(job)),
     )
