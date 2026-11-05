@@ -12,7 +12,7 @@ Home-network vault for a Backblaze B2 backup with content-addressed deduplicatio
 
 ```
 b2_dedup.py          # thin CLI: serve | upload/ingest | download/restore | verify | dates | thumbs
-core/                # B2, hash, ingest, restore, verify, catalog backup, junk rules, time, thumbs, downloads
+core/                # B2, hash, ingest, scratch staging, restore, verify, catalog backup, junk rules, time, thumbs, downloads
 web/                 # FastAPI + Jinja templates + vendored Alpine
 file_utils.py        # mtime/ctime/atime, mime, file category
 gui/                 # legacy Streamlit UI (serve --legacy)
@@ -30,9 +30,10 @@ python b2_dedup.py serve --legacy [--port 8501] # previous Streamlit UI
 Web: GET /search (all drives, junk hidden), GET /browse, GET /file/{id},
 GET /library (file grid + type filter), GET /timeline (moment cards), GET /moment,
 restore set at /restore-set, ingest wizard at /ingest (preview then job),
+scratch uploads at /scratch (browser files/folders → normal ingest job),
 jobs at /jobs/{id}, Settings at /settings (bucket, catalog backup, verify,
-date backfill, thumbnails, browser-download limits). Home shows
-catalog-backup and last-verify health (no B2 call on load).
+date backfill, thumbnails, browser-download limits, Scratch drive name/retention).
+Home shows catalog-backup and last-verify health (no B2 call on load).
 
 Downloads never require a local restore folder:
 - `GET /download/{file_id}` streams one file (pointer-resolved) to the browser.
@@ -67,6 +68,7 @@ Run with a venv, not Docker: `python3 -m venv venv && source venv/bin/activate &
 | File-count cache | `data/.b2_dedup_cache.json` |
 | Extra ingest folders | `ingest_extra_roots` in `data/b2_gui_config.json` |
 | Prepared ZIP exports | `data/exports/` |
+| Scratch upload staging | `data/scratch/<batch-id>/` |
 | Pointer extension | `.b2ptr` |
 | Remote DB backup | `__b2_dedup_metadata__/b2_dedup.db` |
 | Default workers | 10 threads |

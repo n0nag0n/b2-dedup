@@ -2,7 +2,7 @@
 
 A home-network vault for old drives backed up to Backblaze B2. Files are hashed (SHA-256) and only uploaded once; duplicates become lightweight `.b2ptr` pointer files. A local SQLite catalog makes the archive searchable. Dedup is the plumbing — the product is finding what you already have.
 
-The CLI still handles unattended ingest and restore. `python b2_dedup.py serve` opens the StorageInsights web UI (FastAPI + HTML). Ingest is a background job (`/ingest`); search, browse, library/timeline, and restore-to-folder are in the same app. The previous Streamlit UI is `serve --legacy`.
+The CLI still handles unattended ingest and restore. `python b2_dedup.py serve` opens the StorageInsights web UI (FastAPI + HTML). Ingest is a background job (`/ingest`); `/scratch` accepts browser uploads and feeds them through the same ingest job. Search, browse, library/timeline, and restore-to-folder are in the same app. The previous Streamlit UI is `serve --legacy`.
 
 ## Purpose
 
@@ -203,7 +203,7 @@ Checks that catalog originals still exist on B2. Sample mode (default) probes a 
 python b2_dedup.py serve [--port PORT]
 ```
 
-Opens StorageInsights at `http://localhost:8501` (or the given port). Home shows every drive, catalog totals, catalog-backup health, and the last B2 verify. Search is global. **Ingest** (`/ingest`) lists plugged-in disks, previews junk skips and already-tracked files, then starts a job. **Settings** (`/settings`) holds the bucket, restore destination, extra ingest folders, catalog backup/restore, and the verify job. Job logs live at `/jobs`.
+Opens StorageInsights at `http://localhost:8501` (or the given port). Home shows every drive, catalog totals, catalog-backup health, and the last B2 verify. Search is global. **Ingest** (`/ingest`) lists plugged-in disks, previews junk skips and already-tracked files, then starts a job. **Scratch** (`/scratch`) accepts files or folders dragged into the browser and ingests them as the `Scratch` drive, reusing the same dedup and junk rules; staged copies live in `data/scratch/` and are removed after a successful ingest. **Settings** (`/settings`) holds the bucket, restore destination, extra ingest folders, Scratch drive name, catalog backup/restore, and the verify job. Job logs live at `/jobs`.
 
 Downloading does not need a restore folder or a local copy of the vault:
 

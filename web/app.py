@@ -14,6 +14,7 @@ from core.db import init_db
 from core.download import cleanup_exports
 from core.health import get_vault_health
 from core.jobs import recent_jobs, start_worker
+from core.scratch import cleanup_stale_batches
 from web.auth import password_required, vault_password
 from web.routes import router
 from web.templating import WEB_DIR, page_vars, templates
@@ -32,6 +33,10 @@ def create_app() -> FastAPI:
         init_db()
         try:
             cleanup_exports()
+        except Exception:  # noqa: BLE001 - cleanup must never block startup
+            pass
+        try:
+            cleanup_stale_batches()
         except Exception:  # noqa: BLE001 - cleanup must never block startup
             pass
         start_worker()

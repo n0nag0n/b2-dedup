@@ -1,0 +1,128 @@
+{% extends "layout.html" %}
+{% block title %}Scratch · StorageInsights{% endblock %}
+{% block head %}
+<script defer src="/static/scratch.js"></script>
+{% endblock %}
+{% block content %}
+<h1>Scratch</h1>
+<p class="lede">
+    Drop files or whole folders here. They are staged locally, then ingested as
+    drive <strong>{{ scratch_drive }}</strong> with the same hashing, junk rules,
+    dedup pointers, and catalog entries as a plugged-in disk. Staged copies are
+    removed after a successful ingest.
+</p>
+
+{% if not bucket %}
+<p class="warn" role="status">
+    No B2 bucket is set yet. You can still drop files, but the ingest job needs a
+    bucket. Set one below or in <a href="/settings">Settings</a>.
+</p>
+{% endif %}
+
+<div class="scratch-fields">
+    <label>Drive name
+        <input id="scratch-drive-name" type="text" value="{{ scratch_drive }}">
+    </label>
+    <label>Folder in the drive (optional)
+        <input id="scratch-prefix" type="text" placeholder="receipts/2026">
+    </label>
+    <label>B2 bucket
+        <input id="scratch-bucket" type="text" value="{{ bucket }}" placeholder="required to ingest">
+    </label>
+</div>
+
+<section id="scratch-drop"
+         class="dropzone"
+         data-junk-dirs='{{ junk_dirs | tojson }}'
+         data-junk-files='{{ junk_files | tojson }}'>
+    <p><strong>Drop files or folders here</strong></p>
+    <p class="muted">Or pick them from this computer. Folders keep their names and structure.</p>
+    <p class="actions">
+        <button type="button" id="scratch-pick-files">Choose files</button>
+        <button type="button" id="scratch-pick-folder" class="secondary">Choose folder</button>
+    </p>
+    <p class="hint">Uploads are staged under <code>data/scratch</code> and then ingested.
+        Very large files briefly use the system temp folder as well.</p>
+</section>
+<input id="scratch-files" type="file" multiple class="sr-only">
+<input id="scratch-folder" type="file" webkitdirectory multiple class="sr-only">
+
+<noscript>
+    <p class="warn">Browser uploads need JavaScript. You can still ingest a disk from
+        <a href="/ingest">Ingest</a>.</p>
+</noscript>
+
+<section aria-live="polite">
+    <progress id="scratch-progress" class="scratch-progress" max="100" value="0">0%</progress>
+    <p id="scratch-status" class="muted">Nothing queued yet.</p>
+    <pre id="scratch-log" class="log scratch-log" hidden></pre>
+</section>
+
+{% if batches %}
+<section>
+    <h2 class="section-title">Staged uploads</h2>
+    <p class="muted">
+        These batches are waiting for an ingest job. They are removed automatically
+        after a successful ingest, and anything left for {{ retention_days }} days is
+        cleaned up at startup.
+    </p>
+    <table class="files">
+        <thead>
+            <tr>
+                <th>Batch</th>
+                <th>Files</th>
+                <th>Size</th>
+                <th>Uploaded</th>
+                <th>Actions</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for b in batches %}
+            <tr>
+                <td><code>{{ b.id }}</code></td>
+                <td class="num">{{ "{:,}".format(b.files) }}</td>
+                <td class="num">{{ b.bytes_fmt }}</td>
+                <td class="muted">{{ b.when }}</td>
+                <td>
+                    {% if b.active %}
+                    <span class="badge">ingest running</span>
+                    {% else %}
+                    <div class="actions">
+                        <form method="post" action="/scratch/finish" class="inline">
+                            <input type="hidden" name="batch" value="{{ b.id }}">
+                            <input type="hidden" name="drive_name" value="{{ scratch_drive }}">
+                            <input type="hidden" name="bucket" value="{{ bucket }}">
+                            <button type="submit" class="secondary">Ingest now</button>
+                        </form>
+                        <form method="post" action="/scratch/cleanup" class="inline">
+                            <input type="hidden" name="batch" value="{{ b.id }}">
+                            <button type="submit" class="linkish">Delete</button>
+                        </form>
+                    </div>
+                    {% endif %}
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</section>
+{% endif %}
+
+<p class="muted">
+    {{ usage.batches }} staged batch{{ "" if usage.batches == 1 else "es" }} ·
+    {{ "{:,}".format(usage.files) }} files · {{ usage.bytes_fmt }}
+    {% if usage.free_fmt %}· {{ usage.free_fmt }} free on the data disk{% endif %}
+    · staging folder <code class="wrap">{{ usage.path }}</code>
+</p>
+
+<details class="hint">
+    <summary>What happens after the upload</summary>
+    <p>
+        Files are hashed and deduplicated exactly like a disk ingest. A file that
+        already exists elsewhere in the vault becomes a lightweight
+        <code>.b2ptr</code> pointer under <code>{{ scratch_drive }}/</code> instead of
+        a second copy in B2. Junk such as <code>node_modules</code>, AppleDouble
+        <code>._*</code>, and <code>.DS_Store</code> is skipped before upload.
+    </p>
+</details>
+{% endblock %}

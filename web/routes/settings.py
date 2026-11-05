@@ -18,6 +18,8 @@ from core.config import (
     get_download_stream_threshold,
     get_ingest_extra_roots,
     get_restore_dest,
+    get_scratch_drive_name,
+    get_scratch_retention_days,
     get_workers,
     remove_ingest_extra_root,
     set_bucket_name,
@@ -26,6 +28,8 @@ from core.config import (
     set_download_max_files,
     set_download_stream_threshold,
     set_restore_dest,
+    set_scratch_drive_name,
+    set_scratch_retention_days,
     set_workers,
 )
 from core.volumes import is_forbidden_root, scan_places
@@ -33,6 +37,7 @@ from core.health import get_vault_health
 from core.jobs import enqueue
 from core.junk import INGEST_SKIP_DIR_NAMES, INGEST_SKIP_FILE_NAMES, SEARCH_HIDE_DIR_NAMES
 from core.paths import DB_REMOTE_PATH
+from core.scratch import clear_batches, scratch_usage
 from core.thumbs import thumbs_status
 from core.verify import DEFAULT_SAMPLE_SIZE
 from web.auth import password_required
@@ -90,6 +95,9 @@ def _settings_page(request: Request, **extra):
             sync_from_phrase=SYNC_FROM_PHRASE,
             ingest_scan=scan_places(),
             ingest_extra_roots=get_ingest_extra_roots(),
+            scratch=scratch_usage(),
+            scratch_drive=get_scratch_drive_name(),
+            scratch_retention=get_scratch_retention_days(),
             **extra,
         ),
     )
@@ -181,6 +189,28 @@ def settings_remove_ingest_root(request: Request, folder: str = Form("")):
     remove_ingest_extra_root(folder.strip())
     set_notice(request, "Removed that extra folder.")
     return RedirectResponse("/settings", status_code=303)
+
+
+@router.post("/settings/scratch")
+def settings_scratch(
+    request: Request,
+    drive_name: str = Form(""),
+    retention_days: str = Form("7"),
+):
+    name = set_scratch_drive_name(drive_name)
+    days = set_scratch_retention_days(retention_days)
+    set_notice(request, f"Scratch settings saved: drive {name}, {days}-day retention.")
+    return RedirectResponse("/settings#scratch", status_code=303)
+
+
+@router.post("/settings/scratch/clear")
+def settings_scratch_clear(request: Request):
+    removed = clear_batches()
+    if removed:
+        set_notice(request, f"Removed {removed} staged upload{'s' if removed != 1 else ''}.")
+    else:
+        set_notice(request, "There are no staged uploads to remove.")
+    return RedirectResponse("/settings#scratch", status_code=303)
 
 
 @router.post("/settings/verify")

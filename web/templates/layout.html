@@ -19,6 +19,7 @@
                 <a href="/library" {% if request.url.path.startswith('/library') or request.url.path.startswith('/timeline') or request.url.path.startswith('/moment') %}aria-current="page"{% endif %}>Library</a>
                 <a href="/browse" {% if request.url.path.startswith('/browse') %}aria-current="page"{% endif %}>Browse</a>
                 <a href="/ingest" {% if request.url.path.startswith('/ingest') %}aria-current="page"{% endif %}>Ingest</a>
+                <a href="/scratch" {% if request.url.path.startswith('/scratch') %}aria-current="page"{% endif %}>Scratch</a>
                 <a href="/restore-set" {% if request.url.path.startswith('/restore') %}aria-current="page"{% endif %}>
                     Restore set{% if restore_count|default(0) %} ({{ restore_count }}){% endif %}
                 </a>

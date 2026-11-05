@@ -723,6 +723,25 @@ def run_ingest_job(job: dict) -> None:
         for fp, err in errors[:5]:
             update_progress(job_id, result["total_files"], result["total_files"], f"  {fp}: {err}")
 
+    if payload.get("cleanup_source"):
+        from core.scratch import cleanup_after_ingest
+
+        if stats.get("error"):
+            update_progress(
+                job_id, result["total_files"], result["total_files"],
+                f"Kept staged uploads for a retry ({stats['error']} errors).",
+            )
+        elif cleanup_after_ingest(source):
+            update_progress(
+                job_id, result["total_files"], result["total_files"],
+                "Removed staged upload files.",
+            )
+        else:
+            update_progress(
+                job_id, result["total_files"], result["total_files"],
+                "Staged upload files were left in place.",
+            )
+
     finish_job(job_id, "done")
 
 

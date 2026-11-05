@@ -97,6 +97,44 @@
     </form>
 </section>
 
+<section id="scratch">
+    <h2 class="section-title">Scratch drive</h2>
+    <p class="lede">
+        Drop files or folders on the <a href="/scratch">Scratch</a> page and they are
+        ingested as drive <strong>{{ scratch_drive }}</strong>, exactly like a
+        plugged-in disk. Staged copies are removed after a successful ingest.
+    </p>
+    <p>
+        {{ scratch.batches }} staged batch{{ "" if scratch.batches == 1 else "es" }} ·
+        {{ "{:,}".format(scratch.files) }} files · {{ scratch.bytes_fmt }}
+        {% if scratch.free_fmt %}· {{ scratch.free_fmt }} free on the data disk{% endif %}
+        · <code class="wrap">{{ scratch.path }}</code>
+    </p>
+    <form method="post" action="/settings/scratch" class="restore-form">
+        <label>Drive name for browser uploads
+            <input name="drive_name" type="text" value="{{ scratch_drive }}">
+        </label>
+        <label>Delete staged uploads after (days)
+            <input name="retention_days" type="number" min="1" max="365" value="{{ scratch_retention }}">
+        </label>
+        <p class="hint">
+            The name appears on Home and Browse and is the folder prefix in B2.
+            Changing it later makes a new drive in the catalog; existing rows keep
+            the old name. Staged batches are swept at startup once they are older
+            than this, even if they were never ingested.
+        </p>
+        <p class="actions">
+            <button type="submit">Save Scratch settings</button>
+        </p>
+    </form>
+    <form method="post" action="/settings/scratch/clear" class="restore-form">
+        <p class="hint">Remove every staged upload that has not been ingested yet. Files already in B2 are untouched.</p>
+        <p class="actions">
+            <button type="submit" class="secondary">Clear staged uploads</button>
+        </p>
+    </form>
+</section>
+
 <section>
     <h2 class="section-title">Catalog backup</h2>
     <p class="lede">{{ backup.summary }}</p>

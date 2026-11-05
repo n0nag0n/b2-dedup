@@ -130,6 +130,44 @@ def set_download_expiry_hours(n) -> int:
     return _set_download_int("expiry_hours", n)
 
 
+# --- Scratch drive (browser uploads) ----------------------------------------
+
+DEFAULT_SCRATCH_DRIVE_NAME = "Scratch"
+DEFAULT_SCRATCH_RETENTION_DAYS = 7
+
+
+def get_scratch_drive_name() -> str:
+    name = (load_config().get("scratch_drive_name") or "").strip()
+    if not name or "/" in name or "\\" in name:
+        return DEFAULT_SCRATCH_DRIVE_NAME
+    return name
+
+
+def set_scratch_drive_name(name: str) -> str:
+    text = (name or "").strip()
+    if not text or "/" in text or "\\" in text:
+        text = get_scratch_drive_name()
+    update_config(scratch_drive_name=text)
+    return text
+
+
+def get_scratch_retention_days() -> int:
+    raw = load_config().get("scratch_retention_days")
+    try:
+        return max(1, min(int(raw), 365))
+    except (TypeError, ValueError):
+        return DEFAULT_SCRATCH_RETENTION_DAYS
+
+
+def set_scratch_retention_days(days) -> int:
+    try:
+        clean = max(1, min(int(days), 365))
+    except (TypeError, ValueError):
+        clean = DEFAULT_SCRATCH_RETENTION_DAYS
+    update_config(scratch_retention_days=clean)
+    return clean
+
+
 def get_last_verify() -> dict:
     value = load_config().get("last_verify")
     return value if isinstance(value, dict) else {}

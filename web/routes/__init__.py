@@ -9,6 +9,7 @@ from web.routes import (
     jobs,
     library,
     restore,
+    scratch,
     search,
     settings,
 )
@@ -21,5 +22,6 @@ router.include_router(files.router)
 router.include_router(downloads.router)
 router.include_router(restore.router)
 router.include_router(ingest.router)
+router.include_router(scratch.router)
 router.include_router(jobs.router)
 router.include_router(settings.router)
