@@ -19,9 +19,12 @@ from core.config import (
     get_ingest_extra_roots,
     get_restore_dest,
     get_scratch_drive_name,
+    get_scratch_drives,
     get_scratch_retention_days,
     get_workers,
+    normalize_drive_name,
     remove_ingest_extra_root,
+    remove_scratch_drive,
     set_bucket_name,
     set_download_expiry_hours,
     set_download_max_bytes,
@@ -37,7 +40,7 @@ from core.health import get_vault_health
 from core.jobs import enqueue
 from core.junk import INGEST_SKIP_DIR_NAMES, INGEST_SKIP_FILE_NAMES, SEARCH_HIDE_DIR_NAMES
 from core.paths import DB_REMOTE_PATH
-from core.scratch import clear_batches, scratch_usage
+from core.scratch import clear_batches, scratch_usage, staging_root
 from core.thumbs import thumbs_status
 from core.verify import DEFAULT_SAMPLE_SIZE
 from web.auth import password_required
@@ -97,6 +100,8 @@ def _settings_page(request: Request, **extra):
             ingest_extra_roots=get_ingest_extra_roots(),
             scratch=scratch_usage(),
             scratch_drive=get_scratch_drive_name(),
+            scratch_drives=get_scratch_drives(),
+            scratch_staging=str(staging_root()),
             scratch_retention=get_scratch_retention_days(),
             **extra,
         ),
@@ -197,9 +202,44 @@ def settings_scratch(
     drive_name: str = Form(""),
     retention_days: str = Form("7"),
 ):
-    name = set_scratch_drive_name(drive_name)
     days = set_scratch_retention_days(retention_days)
-    set_notice(request, f"Scratch settings saved: drive {name}, {days}-day retention.")
+    # drive_name is optional so older clients can still add a drive with this form.
+    if drive_name.strip():
+        if normalize_drive_name(drive_name) is None:
+            set_notice(request, "Drive name is required and cannot contain slashes.")
+            return RedirectResponse("/settings#scratch", status_code=303)
+        name = set_scratch_drive_name(drive_name)
+        set_notice(request, f"Scratch drive {name} added. Staged uploads are kept for {days} days.")
+    else:
+        set_notice(request, f"Scratch retention saved: {days} days.")
+    return RedirectResponse("/settings#scratch", status_code=303)
+
+
+@router.post("/settings/scratch/add")
+def settings_scratch_add(request: Request, drive_name: str = Form("")):
+    if normalize_drive_name(drive_name) is None:
+        set_notice(request, "Drive name is required and cannot contain slashes.")
+        return RedirectResponse("/settings#scratch", status_code=303)
+    name = set_scratch_drive_name(drive_name)
+    set_notice(request, f"{name} is a scratch drive now.")
+    return RedirectResponse("/settings#scratch", status_code=303)
+
+
+@router.post("/settings/scratch/remove")
+def settings_scratch_remove(request: Request, drive_name: str = Form("")):
+    names = get_scratch_drives()
+    target = None
+    for name in names:
+        if name.lower() == drive_name.strip().lower():
+            target = name
+            break
+    if target is None:
+        set_notice(request, "That scratch drive is not in the list.")
+    elif len(names) == 1:
+        set_notice(request, "Keep at least one scratch drive.")
+    else:
+        remove_scratch_drive(target)
+        set_notice(request, f"Removed {target} from the scratch drives. Files already in the vault stay.")
     return RedirectResponse("/settings#scratch", status_code=303)
 
 

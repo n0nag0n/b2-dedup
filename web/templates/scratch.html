@@ -6,30 +6,110 @@
 {% block content %}
 <h1>Scratch</h1>
 <p class="lede">
-    Drop files or whole folders here. They are staged locally, then ingested as
-    drive <strong>{{ scratch_drive }}</strong> with the same hashing, junk rules,
-    dedup pointers, and catalog entries as a plugged-in disk. Staged copies are
-    removed after a successful ingest.
+    Drop files or whole folders here. They are staged in a folder on this
+    computer, then ingested as the scratch drive you select, with the same
+    hashing, junk rules, dedup pointers, and catalog entries as a plugged-in
+    disk. Staged copies are removed after a successful ingest.
 </p>
 
 {% if not bucket %}
 <p class="warn" role="status">
-    No B2 bucket is set yet. You can still drop files, but the ingest job needs a
-    bucket. Set one below or in <a href="/settings">Settings</a>.
+    No B2 bucket is set yet. You can still drop files, but the ingest job uses
+    the bucket from <a href="/settings">Settings</a>.
 </p>
 {% endif %}
 
 <div class="scratch-fields">
-    <label>Drive name
-        <input id="scratch-drive-name" type="text" value="{{ scratch_drive }}">
-    </label>
+    <div class="scratch-drive-pick">
+        <label for="scratch-drive-name">Scratch drive
+            <select id="scratch-drive-name">
+                {% for name in scratch_drives %}
+                <option value="{{ name }}" {% if name == scratch_drive %}selected{% endif %}>{{ name }}</option>
+                {% endfor %}
+            </select>
+        </label>
+        {% if scratch_drives|length > 1 %}
+        <form method="post" action="/scratch/drives/remove" class="inline">
+            <input type="hidden" name="drive_name" id="scratch-remove-name" value="{{ scratch_drive }}">
+            <button type="submit" class="linkish" title="Takes this name off the list. Files already in the vault stay.">Remove selected</button>
+        </form>
+        {% endif %}
+    </div>
+    <form method="post" action="/scratch/drives" class="scratch-add">
+        <label>Add a drive
+            <input name="drive_name" type="text" required maxlength="80" placeholder="Receipts" autocomplete="off">
+        </label>
+        <button type="submit" class="secondary">Add</button>
+    </form>
     <label>Folder in the drive (optional)
         <input id="scratch-prefix" type="text" placeholder="receipts/2026">
     </label>
-    <label>B2 bucket
-        <input id="scratch-bucket" type="text" value="{{ bucket }}" placeholder="required to ingest">
-    </label>
 </div>
+
+<section class="scratch-browser" id="scratch-store" aria-label="Staging folder">
+    <h2 class="section-title">Staging folder</h2>
+    <p class="muted">
+        Dropped files are saved in this folder on the computer running StorageInsights,
+        then ingested. Choose any folder on this machine. That is your own computer
+        when the app runs locally, or the server when it runs there.
+    </p>
+    <p>
+        <code class="wrap">{{ staging_path }}</code>
+        {% if not browsing %}
+        <a href="/scratch?browse=1">Change folder</a>
+        {% endif %}
+    </p>
+    {% if not staging_ok %}
+    <p class="warn" role="status">That folder is missing or not writable. Choose another one before uploading.</p>
+    {% endif %}
+    {% if browsing and listing %}
+    <nav class="crumbs" aria-label="Folder path">
+        {% if listing.parent %}
+        <a href="/scratch?browse=1&amp;path={{ listing.parent | urlencode }}">Up</a>
+        <span aria-hidden="true">·</span>
+        {% endif %}
+        {% for c in listing.crumbs %}
+            {% if not loop.last %}
+            <a href="/scratch?browse=1&amp;path={{ c.path | urlencode }}">{{ c.label }}</a>
+            <span aria-hidden="true">/</span>
+            {% else %}
+            <span>{{ c.label }}</span>
+            {% endif %}
+        {% endfor %}
+    </nav>
+    <p class="actions scratch-browse-links">
+        <a href="/scratch?browse=1&amp;path={{ home_path | urlencode }}">Home</a>
+        <a href="/scratch?browse=1&amp;path={{ staging_path | urlencode }}">Current staging folder</a>
+        <a href="/scratch">Close</a>
+    </p>
+    {% if listing.is_staging %}
+    <p><span class="badge">Uploads are stored here</span></p>
+    {% endif %}
+    {% if listing.dirs %}
+    <ul class="folder-list">
+        {% for d in listing.dirs %}
+        <li><a href="/scratch?browse=1&amp;path={{ d.path | urlencode }}">{{ d.name }}</a></li>
+        {% endfor %}
+    </ul>
+    {% else %}
+    <p class="muted">No subfolders here.</p>
+    {% endif %}
+    {% if listing.truncated %}
+    <p class="muted">Showing the first 300 folders.</p>
+    {% endif %}
+    <form method="post" action="/scratch/staging" class="scratch-add">
+        <input type="hidden" name="path" value="{{ listing.path }}">
+        <button type="submit">Use this folder</button>
+    </form>
+    <form method="post" action="/scratch/staging/mkdir" class="scratch-add">
+        <input type="hidden" name="parent" value="{{ listing.path }}">
+        <label>New folder here
+            <input name="name" type="text" required maxlength="255" placeholder="scratch" autocomplete="off">
+        </label>
+        <button type="submit" class="secondary">Create</button>
+    </form>
+    {% endif %}
+</section>
 
 <section id="scratch-drop"
          class="dropzone"
@@ -41,7 +121,7 @@
         <button type="button" id="scratch-pick-files">Choose files</button>
         <button type="button" id="scratch-pick-folder" class="secondary">Choose folder</button>
     </p>
-    <p class="hint">Uploads are staged under <code>data/scratch</code> and then ingested.
+    <p class="hint">Files are staged in the folder above, then ingested.
         Very large files briefly use the system temp folder as well.</p>
 </section>
 <input id="scratch-files" type="file" multiple class="sr-only">
@@ -91,7 +171,6 @@
                         <form method="post" action="/scratch/finish" class="inline">
                             <input type="hidden" name="batch" value="{{ b.id }}">
                             <input type="hidden" name="drive_name" value="{{ scratch_drive }}">
-                            <input type="hidden" name="bucket" value="{{ bucket }}">
                             <button type="submit" class="secondary">Ingest now</button>
                         </form>
                         <form method="post" action="/scratch/cleanup" class="inline">
@@ -111,7 +190,7 @@
 <p class="muted">
     {{ usage.batches }} staged batch{{ "" if usage.batches == 1 else "es" }} ·
     {{ "{:,}".format(usage.files) }} files · {{ usage.bytes_fmt }}
-    {% if usage.free_fmt %}· {{ usage.free_fmt }} free on the data disk{% endif %}
+    {% if usage.free_fmt %}· {{ usage.free_fmt }} free on that disk{% endif %}
     · staging folder <code class="wrap">{{ usage.path }}</code>
 </p>
 

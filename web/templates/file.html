@@ -6,10 +6,55 @@
 </p>
 <h1>{{ file.name }}</h1>
 
-{% if file.thumb_url %}
-<figure class="preview">
-    <img src="{{ file.thumb_url }}" alt="{{ file.name }}">
+{% if preview.kind == "image" %}
+<figure class="file-preview">
+    <img src="/preview/{{ file.id }}" alt="{{ file.name }}">
 </figure>
+{% elif preview.kind == "thumb" %}
+<figure class="file-preview">
+    <img src="{{ file.thumb_url }}" alt="{{ file.name }}">
+    {% if preview.note %}<figcaption>{{ preview.note }}</figcaption>{% endif %}
+</figure>
+{% elif preview.kind == "text" %}
+<figure class="file-preview">
+    <pre class="file-preview-text">{% if text_error %}{{ text_error }}{% elif text_preview %}{{ text_preview }}{% else %}(empty file){% endif %}</pre>
+</figure>
+{% elif preview.kind == "pdf" %}
+<figure class="file-preview">
+    <iframe class="file-preview-frame" src="/preview/{{ file.id }}" title="{{ file.name }}"></iframe>
+</figure>
+{% elif preview.kind == "audio" %}
+<figure class="file-preview">
+    <audio controls preload="metadata" src="/preview/{{ file.id }}">
+        <a href="/download/{{ file.id }}">Download</a>
+    </audio>
+</figure>
+{% elif preview.kind == "video" %}
+<figure class="file-preview">
+    <video controls playsinline preload="metadata" src="/preview/{{ file.id }}">
+        <a href="/download/{{ file.id }}">Download</a>
+    </video>
+</figure>
+{% endif %}
+{% if preview.note and preview.kind != "thumb" %}
+<p class="preview-note">{{ preview.note }}</p>
+{% endif %}
+{% if preview.kind == "image" or preview.kind == "audio" or preview.kind == "video" %}
+<script>
+(function () {
+    var figure = document.currentScript.previousElementSibling;
+    var media = figure && figure.querySelector("img, video, audio");
+    if (!media) return;
+    media.addEventListener("error", function () {
+        var note = document.createElement("p");
+        note.className = "preview-note";
+        note.textContent = media.tagName === "IMG"
+            ? "Could not load this preview from B2."
+            : "This browser could not play that file.";
+        media.replaceWith(note);
+    });
+})();
+</script>
 {% endif %}
 
 <dl class="meta-list">

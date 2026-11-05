@@ -9,18 +9,12 @@ from core.db import connect
 from core.junk import INGEST_SKIP_DIR_NAMES, SEARCH_HIDE_DIR_NAMES
 
 ROWS_PER_PAGE = 50
+FOLDER_PAGE_SIZE = 40
 DIR_PAGE_SIZE = 200
+# Other paths disclosed on a grouped search row, besides the one shown.
+PLACE_PREVIEW = 12
 
-_SORT_SQL = {
-    "path": "f.file_path ASC",
-    "mtime_desc": "f.file_mtime DESC",
-    "mtime_asc": "f.file_mtime ASC",
-    "taken_desc": "f.best_taken_at DESC",
-    "taken_asc": "f.best_taken_at ASC",
-    "size_desc": "f.size DESC",
-    "size_asc": "f.size ASC",
-    "type": "f.file_type ASC",
-}
+_DESC_SORTS = {"size_desc", "mtime_desc", "taken_desc"}
 
 
 def format_size(size_bytes: int | float | None) -> str:
@@ -163,6 +157,7 @@ def get_file_types() -> list[str]:
 # other characters as syntax ("." in dice1.png, "-" in file-name), even though
 # the index stores them as word breaks.
 _FTS_TOKEN_RE = re.compile(r'"[^"]*"\*?|\w+\*?|\*')
+_NAME_TOKEN_RE = re.compile(r"\w+")
 _FTS_OPERATORS = {"AND", "OR", "NOT", "NEAR"}
 # Errors raised by the FTS5 query parser (not by SQLite itself).
 _FTS_QUERY_ERRORS = (
@@ -214,6 +209,347 @@ def fts_query(raw: str) -> str:
     return " ".join(tokens)
 
 
+def _term_needle(term: str) -> str:
+    """A substring that has to appear before this term can match a name."""
+    body = term[:-1] if term.endswith("*") else term
+    if body.startswith('"') and body.endswith('"') and len(body) >= 2:
+        body = body[1:-1]
+    words = _NAME_TOKEN_RE.findall(body.lower())
+    return words[0] if words else ""
+
+
+def _term_in_tokens(term: str, tokens: list[str]) -> bool:
+    prefix = term.endswith("*")
+    body = term[:-1] if prefix else term
+    if body.startswith('"'):
+        phrase = body[1:-1] if body.endswith('"') else body[1:]
+        words = _NAME_TOKEN_RE.findall(phrase.lower())
+        if not words:
+            return False
+        if prefix:
+            head, last = words[:-1], words[-1]
+            span = len(words)
+            for i in range(len(tokens) - span + 1):
+                if tokens[i:i + len(head)] == head and tokens[i + len(head)].startswith(last):
+                    return True
+            return False
+        span = len(words)
+        return any(tokens[i:i + span] == words for i in range(len(tokens) - span + 1))
+    word = body.lower()
+    if not word:
+        return False
+    if prefix:
+        return any(tok.startswith(word) for tok in tokens)
+    return word in tokens
+
+
+def _name_matcher(expression: str):
+    """Match one path segment the way the FTS expression matches that name.
+
+    Terms are AND within a clause and OR across clauses, same as the
+    expression ``fts_query`` builds. Matching is against the segment's own
+    tokens, so a folder named Backup matches ``backup`` and a file that
+    merely lives inside that folder does not.
+    """
+    parts = _FTS_TOKEN_RE.findall(expression or "")
+    clauses: list[list[tuple[str, bool]]] = [[]]
+    i = 0
+    while i < len(parts):
+        part = parts[i]
+        if part == "OR":
+            clauses.append([])
+            i += 1
+            continue
+        if part == "AND":
+            i += 1
+            continue
+        negated = False
+        if part == "NOT":
+            negated = True
+            i += 1
+            if i >= len(parts):
+                break
+            part = parts[i]
+        if part in _FTS_OPERATORS or part == "*":
+            i += 1
+            continue
+        clauses[-1].append((part, negated))
+        i += 1
+    clauses = [clause for clause in clauses if clause]
+
+    needle_groups: list[list[str]] = []
+    for clause in clauses:
+        positives = [term for term, negated in clause if not negated]
+        if not positives:
+            # A NOT-only clause can match a name that lacks every needle.
+            needle_groups.append([])
+            continue
+        needles = []
+        for term in positives:
+            needle = _term_needle(term)
+            if needle:
+                needles.append(needle)
+        needle_groups.append(needles)
+
+    def matches(name: str) -> bool:
+        if not name or not clauses:
+            return False
+        lowered = name.lower()
+        if not any(all(needle in lowered for needle in group) for group in needle_groups):
+            return False
+        tokens = _NAME_TOKEN_RE.findall(lowered)
+        if not tokens:
+            return False
+        for clause in clauses:
+            if all(_term_in_tokens(term, tokens) != negated for term, negated in clause):
+                return True
+        return False
+
+    return matches
+
+
+def _noun_label(count: int, singular: str, plural: str) -> str:
+    return f"{count:,} {singular if count == 1 else plural}"
+
+
+def _also_label(count: int, noun: str) -> str:
+    if count <= 0:
+        return ""
+    word = noun if count == 1 else noun + "s"
+    if noun == "drive":
+        return f"Also on {count:,} other {word}"
+    return f"Also in {count:,} other {word}"
+
+
+def _empty_search(per_page: int, folder_per_page: int) -> dict:
+    return {
+        "total": 0,
+        "total_fmt": "0",
+        "file_label": _noun_label(0, "unique file", "unique files"),
+        "page": 1,
+        "pages": 1,
+        "has_more": False,
+        "per_page": per_page,
+        "files": [],
+        "folder_total": 0,
+        "folder_total_fmt": "0",
+        "folder_label": _noun_label(0, "folder", "folders"),
+        "folder_page": 1,
+        "folder_pages": 1,
+        "folder_has_more": False,
+        "folder_per_page": folder_per_page,
+        "folders": [],
+    }
+
+
+def _prefer_rep(new: tuple, old: tuple) -> bool:
+    """Prefer the original upload, then a stable path, as the row we show."""
+    if new[0] != old[0]:
+        return new[0] > old[0]
+    return new[1] < old[1]
+
+
+def _collect_hits(rows, name_matches) -> tuple[dict, dict]:
+    reps: dict = {}
+    folders: dict[str, set[str]] = {}
+    # Directory names repeat on every file beneath them. Remember both the
+    # segment verdict and which prefixes of a parent path are folder hits.
+    seen: dict[str, bool] = {}
+    parent_hits: dict[str, tuple[str, ...]] = {}
+
+    def matches(name: str) -> bool:
+        hit = seen.get(name)
+        if hit is None:
+            hit = name_matches(name)
+            seen[name] = hit
+        return hit
+
+    def folders_in(parent: str) -> tuple[str, ...]:
+        found = parent_hits.get(parent)
+        if found is not None:
+            return found
+        matched: list[str] = []
+        if parent:
+            start = 0
+            while True:
+                slash = parent.find("/", start)
+                if slash < 0:
+                    segment = parent[start:]
+                    if segment and matches(segment):
+                        matched.append(parent)
+                    break
+                segment = parent[start:slash]
+                if segment and matches(segment):
+                    matched.append(parent[:slash])
+                start = slash + 1
+        found = tuple(matched)
+        parent_hits[parent] = found
+        return found
+
+    for row in rows:
+        raw_path = row["file_path"] or ""
+        if "\\" in raw_path:
+            raw_path = raw_path.replace("\\", "/")
+        slash = raw_path.rfind("/")
+        if slash < 0:
+            name, parent = raw_path, ""
+        else:
+            name, parent = raw_path[slash + 1:], raw_path[:slash]
+        if name and matches(name):
+            key = row["hash"] or f"id:{row['id']}"
+            candidate = (
+                1 if row["is_original"] else 0,
+                raw_path,
+                int(row["id"]),
+                int(row["size"] or 0),
+                row["file_mtime"],
+                row["best_taken_at"],
+                row["drive_name"] or "",
+                row["file_type"] or "",
+                key,
+            )
+            current = reps.get(key)
+            if current is None or _prefer_rep(candidate, current):
+                reps[key] = candidate
+        if not parent:
+            continue
+        drive = row["drive_name"] or ""
+        for folder_path in folders_in(parent):
+            known = folders.get(folder_path)
+            if known is None:
+                folders[folder_path] = {drive}
+            else:
+                known.add(drive)
+    return reps, folders
+
+
+def _group_sort_key(rep: tuple, sort: str):
+    _is_orig, path, _fid, size, mtime, taken, _drive, _ftype, _key = rep
+    path_key = path.lower()
+    if sort == "size_desc":
+        return (size is not None, size or 0, path_key)
+    if sort == "size_asc":
+        return (size is None, size or 0, path_key)
+    if sort == "mtime_desc":
+        return (bool(mtime), mtime or "", path_key)
+    if sort == "mtime_asc":
+        return (not mtime, mtime or "", path_key)
+    if sort == "taken_desc":
+        return (bool(taken), taken or "", path_key)
+    if sort == "taken_asc":
+        return (not taken, taken or "", path_key)
+    return (path_key,)
+
+
+def _page_window(items: list, page: int, per_page: int) -> tuple[list, int, int, int, bool]:
+    total = len(items)
+    pages = max(1, (total + per_page - 1) // per_page) if total else 1
+    page = min(max(1, int(page or 1)), pages)
+    start = (page - 1) * per_page
+    return items[start:start + per_page], total, page, pages, page < pages
+
+
+def _rep_to_file(rep: tuple) -> dict:
+    is_orig, path, fid, size, mtime, taken, drive, ftype, key = rep
+    norm = path.replace("\\", "/")
+    parent, _, name = norm.rpartition("/")
+    return {
+        "id": fid,
+        "hash": key,
+        "drive_name": drive,
+        "file_path": path,
+        "name": name or norm,
+        "parent": parent,
+        "size": size,
+        "size_fmt": format_size(size),
+        "is_original": bool(is_orig),
+        "file_type": ftype or "",
+        "mime_type": "",
+        "file_mtime": mtime,
+        "mtime_fmt": _fmt_mtime(mtime),
+        "best_taken_at": taken,
+        "taken_fmt": _fmt_mtime(taken) if taken else "",
+        "taken_at_source": None,
+        "created_at": None,
+        "upload_path": None,
+        "places": [],
+        "place_count": 1,
+        "other_count": 0,
+        "places_label": "",
+        "places_more": 0,
+        "places_more_fmt": "",
+    }
+
+
+def _folders_from(folders: dict[str, set[str]]) -> list[dict]:
+    items = []
+    for path, drives in folders.items():
+        drive_list = sorted(drive for drive in drives if drive)
+        if not drive_list:
+            continue
+        parent, _, name = path.rpartition("/")
+        others = drive_list[1:]
+        items.append({
+            "name": name or path,
+            "path": path,
+            "parent": parent,
+            "drive_name": drive_list[0],
+            "others": others,
+            "others_label": _also_label(len(others), "drive"),
+        })
+    items.sort(key=lambda folder: (folder["path"].lower(), folder["drive_name"].lower()))
+    return items
+
+
+def _attach_places(conn, files: list[dict], *, hide_hidden: bool) -> None:
+    hashed = [
+        item for item in files
+        if item.get("hash") and not str(item["hash"]).startswith("id:")
+    ]
+    if not hashed:
+        return
+    hashes = [item["hash"] for item in hashed]
+    marks = ",".join("?" * len(hashes))
+    # Filter hidden rows in Python. Putting searchable in the SQL makes
+    # SQLite scan idx_files_searchable instead of the hash index.
+    rows = conn.execute(
+        f"SELECT id, hash, drive_name, file_path, searchable FROM files WHERE hash IN ({marks})",
+        hashes,
+    ).fetchall()
+    by_hash: dict[str, list] = {}
+    counts: dict[str, int] = {}
+    for row in rows:
+        if hide_hidden and not row["searchable"]:
+            continue
+        by_hash.setdefault(row["hash"], []).append(row)
+        counts[row["hash"]] = counts.get(row["hash"], 0) + 1
+    for item in hashed:
+        group = by_hash.get(item["hash"], [])
+        group.sort(key=lambda row: ((row["drive_name"] or ""), row["file_path"] or ""))
+        others = [row for row in group if int(row["id"]) != item["id"]][:PLACE_PREVIEW]
+        total = counts.get(item["hash"], 1)
+        other_count = max(total - 1, 0)
+        places = []
+        for row in others:
+            path = row["file_path"] or ""
+            norm = path.replace("\\", "/")
+            parent, _, name = norm.rpartition("/")
+            places.append({
+                "id": int(row["id"]),
+                "drive_name": row["drive_name"],
+                "file_path": path,
+                "name": name or norm,
+                "parent": parent,
+            })
+        more = max(other_count - len(places), 0)
+        item["places"] = places
+        item["place_count"] = total
+        item["other_count"] = other_count
+        item["places_label"] = _also_label(other_count, "place")
+        item["places_more"] = more
+        item["places_more_fmt"] = f"{more:,}"
+
+
 def search_files(
     q: str,
     *,
@@ -226,88 +562,98 @@ def search_files(
     sort: str = "path",
     page: int = 1,
     per_page: int = ROWS_PER_PAGE,
+    folder_page: int = 1,
+    folder_per_page: int = FOLDER_PAGE_SIZE,
 ) -> dict:
-    """Global FTS search. Drive is an optional filter, never required."""
-    q = (q or "").strip()
-    page = max(1, int(page or 1))
-    order = _SORT_SQL.get(sort, _SORT_SQL["path"])
+    """Search file names and folder names across every drive.
 
-    conditions = []
-    params: list = []
+    Drive is an optional filter, never required. A file matches when its
+    own name matches. A folder matches when that directory's name matches,
+    so searching for a folder does not list every file inside it. Bytes
+    that were backed up more than once come back as one file, and the
+    other paths are attached to that row.
+    """
+    q = (q or "").strip()
+    fts = fts_query(q) if q else ""
+    if not fts:
+        return _empty_search(per_page, folder_per_page)
+
+    conditions = ["f.id IN (SELECT rowid FROM files_fts WHERE files_fts MATCH ?)"]
+    params: list = [fts]
 
     if hide_hidden:
         conditions.append("f.searchable = 1")
-
     if drive:
         conditions.append("f.drive_name = ?")
         params.append(drive)
-
     if file_type:
         conditions.append("f.file_type = ?")
         params.append(file_type)
-
     if origin == "original":
         conditions.append("f.is_original = 1")
     elif origin == "copy":
         conditions.append("f.is_original = 0")
-
     if ext:
-        exts = [e.strip().lower().lstrip(".") for e in ext.split(",") if e.strip()]
+        exts = [piece.strip().lower().lstrip(".") for piece in ext.split(",") if piece.strip()]
         if exts:
             conditions.append("(" + " OR ".join("f.file_path LIKE ?" for _ in exts) + ")")
-            params.extend(f"%.{e}" for e in exts)
-
+            params.extend(f"%.{ext_name}" for ext_name in exts)
     if year and str(year).isdigit() and len(str(year)) == 4:
         conditions.append("substr(f.best_taken_at, 1, 4) = ?")
         params.append(str(year))
 
-    if q:
-        fts = fts_query(q)
-        if fts:
-            conditions.append(
-                "f.id IN (SELECT rowid FROM files_fts WHERE files_fts MATCH ?)"
-            )
-            params.append(fts)
-        else:
-            # Punctuation-only input has no indexed tokens. Match nothing
-            # instead of sending an empty FTS expression.
-            conditions.append("1 = 0")
-
-    where = (" WHERE " + " AND ".join(conditions)) if conditions else ""
-
-    # Fetch one extra row instead of COUNT(*) — FTS + flag filters over
-    # this catalog is too large for an exact count on every page view.
-    offset = (page - 1) * per_page
+    where = " WHERE " + " AND ".join(conditions)
     select_sql = (
-        "SELECT f.id, f.drive_name, f.file_path, f.size, f.is_original, "
-        "f.file_type, f.mime_type, f.file_mtime, f.created_at, "
-        "f.best_taken_at, f.taken_at_source "
-        f"FROM files f{where} "
-        f"ORDER BY {order} LIMIT ? OFFSET ?"
+        "SELECT f.id, f.hash, f.drive_name, f.file_path, f.size, f.is_original, "
+        "f.file_type, f.file_mtime, f.best_taken_at "
+        f"FROM files f{where}"
     )
+    name_matches = _name_matcher(fts)
 
     conn = connect(readonly=True)
     try:
-        rows = conn.execute(select_sql, [*params, per_page + 1, offset]).fetchall()
-    except sqlite3.OperationalError as exc:
-        # Malformed user input should show no results, not a 500 page.
-        if not str(exc).startswith(_FTS_QUERY_ERRORS):
-            raise
-        rows = []
+        try:
+            rows = conn.execute(select_sql, params)
+            reps, folder_map = _collect_hits(rows, name_matches)
+        except sqlite3.OperationalError as exc:
+            # Malformed user input should show no results, not a 500 page.
+            if not str(exc).startswith(_FTS_QUERY_ERRORS):
+                raise
+            reps, folder_map = {}, {}
+
+        ordered = sorted(
+            reps.values(),
+            key=lambda rep: _group_sort_key(rep, sort),
+            reverse=sort in _DESC_SORTS,
+        )
+        file_slice, total, page, pages, has_more = _page_window(ordered, page, per_page)
+        files = [_rep_to_file(rep) for rep in file_slice]
+        _attach_places(conn, files, hide_hidden=hide_hidden)
+
+        folder_items = _folders_from(folder_map)
+        folder_slice, folder_total, folder_page, folder_pages, folder_has_more = _page_window(
+            folder_items, folder_page, folder_per_page
+        )
     finally:
         conn.close()
 
-    has_more = len(rows) > per_page
-    rows = rows[:per_page]
-    shown = offset + len(rows)
     return {
-        "total": shown,
-        "total_fmt": f"{shown:,}+" if has_more else f"{shown:,}",
+        "total": total,
+        "total_fmt": f"{total:,}",
+        "file_label": _noun_label(total, "unique file", "unique files"),
         "page": page,
-        "pages": page + 1 if has_more else page,
+        "pages": pages,
         "has_more": has_more,
         "per_page": per_page,
-        "files": [_file_row(r) for r in rows],
+        "files": files,
+        "folder_total": folder_total,
+        "folder_total_fmt": f"{folder_total:,}",
+        "folder_label": _noun_label(folder_total, "folder", "folders"),
+        "folder_page": folder_page,
+        "folder_pages": folder_pages,
+        "folder_has_more": folder_has_more,
+        "folder_per_page": folder_per_page,
+        "folders": folder_slice,
     }
 
 

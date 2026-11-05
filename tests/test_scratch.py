@@ -2,14 +2,19 @@
 import io
 import os
 import time
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
 
 from core import scratch
 from core.config import (
+    get_bucket_name,
     get_scratch_drive_name,
+    get_scratch_drives,
     get_scratch_retention_days,
+    get_scratch_staging_dir,
+    set_bucket_name,
     set_scratch_drive_name,
     set_scratch_retention_days,
 )
@@ -353,9 +358,235 @@ def test_settings_clears_staged_batches(tmp_path, monkeypatch):
 def test_scratch_config_round_trip(tmp_path, monkeypatch):
     _isolate(tmp_path, monkeypatch)
     assert get_scratch_drive_name() == "Scratch"
+    assert get_scratch_drives() == ["Scratch"]
     assert set_scratch_drive_name("Dropbox") == "Dropbox"
     assert get_scratch_drive_name() == "Dropbox"
+    assert get_scratch_drives() == ["Scratch", "Dropbox"]
     assert set_scratch_drive_name("bad/name") == "Dropbox"
+    assert set_scratch_drive_name("dropbox") == "Dropbox"
     assert set_scratch_retention_days(3) == 3
     assert get_scratch_retention_days() == 3
     assert set_scratch_retention_days("nope") == 7
+
+
+def test_scratch_page_offers_drives_without_bucket_field(tmp_path, monkeypatch):
+    _isolate(tmp_path, monkeypatch)
+    set_scratch_drive_name("PhoneDrop")
+    client = TestClient(app)
+    response = client.get("/scratch")
+    assert response.status_code == 200
+    assert "<select" in response.text
+    assert "PhoneDrop" in response.text
+    assert "Scratch" in response.text
+    assert 'id="scratch-bucket"' not in response.text
+    assert 'name="bucket"' not in response.text
+    assert "No B2 bucket is set yet" in response.text
+    assert 'href="/settings"' in response.text
+    assert "Change folder" in response.text
+    assert "Add a drive" in response.text
+
+
+def test_add_and_remove_scratch_drive(tmp_path, monkeypatch):
+    _isolate(tmp_path, monkeypatch)
+    client = TestClient(app)
+    added = client.post(
+        "/scratch/drives",
+        data={"drive_name": "Receipts"},
+        follow_redirects=False,
+    )
+    assert added.status_code == 303
+    assert get_scratch_drive_name() == "Receipts"
+    assert get_scratch_drives() == ["Scratch", "Receipts"]
+
+    page = client.get("/scratch")
+    assert 'value="Receipts" selected' in page.text or "Receipts" in page.text
+    assert "Remove selected" in page.text
+
+    rejected = client.post(
+        "/scratch/drives",
+        data={"drive_name": "bad/name"},
+        follow_redirects=True,
+    )
+    assert rejected.status_code == 200
+    assert "slashes" in rejected.text
+    assert "bad/name" not in get_scratch_drives()
+
+    removed = client.post(
+        "/scratch/drives/remove",
+        data={"drive_name": "Receipts"},
+        follow_redirects=False,
+    )
+    assert removed.status_code == 303
+    assert get_scratch_drives() == ["Scratch"]
+    assert get_scratch_drive_name() == "Scratch"
+
+    kept = client.post(
+        "/scratch/drives/remove",
+        data={"drive_name": "Scratch"},
+        follow_redirects=True,
+    )
+    assert "at least one" in kept.text
+    assert get_scratch_drives() == ["Scratch"]
+
+
+def test_finish_uses_settings_bucket_only(tmp_path, monkeypatch):
+    _isolate(tmp_path, monkeypatch)
+    set_bucket_name("kept-bucket")
+    set_scratch_drive_name("PhoneDrop")
+    batch = scratch.new_batch_id()
+    scratch.save_upload(io.BytesIO(b"hello"), batch, "a.txt")
+
+    captured = {}
+
+    def fake_enqueue(job_type, payload):
+        captured["payload"] = payload
+        return 7
+
+    monkeypatch.setattr("web.routes.scratch.enqueue", fake_enqueue)
+    client = TestClient(app)
+    response = client.post(
+        "/scratch/finish",
+        data={"batch": batch, "drive_name": "PhoneDrop", "bucket": "other-bucket"},
+        headers={"Accept": "application/json"},
+    )
+    assert response.status_code == 200
+    assert captured["payload"]["bucket"] == "kept-bucket"
+    assert captured["payload"]["drive_name"] == "PhoneDrop"
+    assert get_bucket_name() == "kept-bucket"
+
+
+def test_finish_rejects_unknown_drive(tmp_path, monkeypatch):
+    _isolate(tmp_path, monkeypatch)
+    set_bucket_name("kept-bucket")
+    batch = scratch.new_batch_id()
+    scratch.save_upload(io.BytesIO(b"hello"), batch, "a.txt")
+    client = TestClient(app)
+    response = client.post(
+        "/scratch/finish",
+        data={"batch": batch, "drive_name": "NotADrive"},
+        headers={"Accept": "application/json"},
+    )
+    assert response.status_code == 400
+    assert "not in the list" in response.json()["error"]
+
+
+def test_browse_lists_directories_and_resolved_symlinks(tmp_path):
+    host = tmp_path / "host"
+    real = tmp_path / "real"
+    host.mkdir()
+    real.mkdir()
+    (host / "linked").symlink_to(real, target_is_directory=True)
+    (host / "notes.txt").write_text("not a folder", encoding="utf-8")
+    (host / "photos").mkdir()
+
+    dirs, truncated = scratch.list_child_dirs(host)
+    assert truncated is False
+    assert [item["name"] for item in dirs] == ["linked", "photos"]
+    assert Path(dirs[0]["path"]) == real.resolve()
+
+
+def test_staging_folder_browser_and_upload_location(tmp_path, monkeypatch):
+    _isolate(tmp_path, monkeypatch)
+    host = tmp_path / "host"
+    photos = host / "photos"
+    photos.mkdir(parents=True)
+    (photos / "keep.txt").write_text("leave me", encoding="utf-8")
+
+    client = TestClient(app)
+    listing = client.get("/scratch", params={"browse": "1", "path": str(host)})
+    assert listing.status_code == 200
+    assert "photos" in listing.text
+    assert "Use this folder" in listing.text
+    assert "keep.txt" not in listing.text
+
+    chosen = client.post(
+        "/scratch/staging",
+        data={"path": str(photos)},
+        follow_redirects=False,
+    )
+    assert chosen.status_code == 303
+    assert get_scratch_staging_dir() == str(photos.resolve())
+
+    created = client.post(
+        "/scratch/staging/mkdir",
+        data={"parent": str(host), "name": "inbox"},
+        follow_redirects=False,
+    )
+    assert created.status_code == 303
+    assert (host / "inbox").is_dir()
+    assert "browse=1" in created.headers["location"]
+
+    blocked = client.post(
+        "/scratch/staging",
+        data={"path": "/"},
+        follow_redirects=True,
+    )
+    assert "system directory" in blocked.text
+    assert get_scratch_staging_dir() == str(photos.resolve())
+
+    mkdir_blocked = client.post(
+        "/scratch/staging/mkdir",
+        data={"parent": "/", "name": "scratch-should-not-exist"},
+        follow_redirects=True,
+    )
+    assert "system directory" in mkdir_blocked.text
+    assert not Path("/scratch-should-not-exist").exists()
+
+    batch = scratch.new_batch_id()
+    saved = scratch.save_upload(io.BytesIO(b"hello"), batch, "a.txt")
+    assert saved["skipped"] is False
+    assert (photos / batch / "a.txt").read_bytes() == b"hello"
+    assert not (tmp_path / "scratch" / batch).exists()
+
+
+def test_previous_staging_folder_stays_listed(tmp_path, monkeypatch):
+    _isolate(tmp_path, monkeypatch)
+    from core.config import set_scratch_staging_dir
+
+    first = tmp_path / "first"
+    second = tmp_path / "second"
+    first.mkdir()
+    second.mkdir()
+    set_scratch_staging_dir(str(first))
+    batch = scratch.new_batch_id()
+    scratch.save_upload(io.BytesIO(b"hello"), batch, "a.txt")
+    set_scratch_staging_dir(str(second))
+
+    listed = scratch.list_batches()
+    assert [item["id"] for item in listed] == [batch]
+    assert scratch.cleanup_after_ingest(first / batch) is True
+    assert not (first / batch).exists()
+    assert second.is_dir()
+
+
+def test_settings_adds_and_removes_scratch_drives(tmp_path, monkeypatch):
+    _isolate(tmp_path, monkeypatch)
+    client = TestClient(app)
+    page = client.get("/settings")
+    assert "Add a scratch drive" in page.text
+    assert "Choose a different folder" in page.text
+    assert "B2 bucket" in page.text
+
+    added = client.post(
+        "/settings/scratch/add",
+        data={"drive_name": "PhoneDrop"},
+        follow_redirects=False,
+    )
+    assert added.status_code == 303
+    assert get_scratch_drive_name() == "PhoneDrop"
+    assert get_scratch_retention_days() == 7
+
+    client.post(
+        "/settings/scratch",
+        data={"retention_days": "3"},
+        follow_redirects=False,
+    )
+    assert get_scratch_retention_days() == 3
+    assert get_scratch_drive_name() == "PhoneDrop"
+
+    client.post(
+        "/settings/scratch/remove",
+        data={"drive_name": "PhoneDrop"},
+        follow_redirects=False,
+    )
+    assert get_scratch_drives() == ["Scratch"]

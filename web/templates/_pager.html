@@ -3,7 +3,7 @@
     {% if results.page > 1 %}
     <a href="{{ request.url.include_query_params(page=results.page - 1) }}">Previous</a>
     {% endif %}
-    <span>Page {{ results.page }}{% if results.pages and not results.has_more %} of {{ results.pages }}{% endif %}</span>
+    <span>Page {{ results.page }}{% if results.pages and results.pages > 1 %} of {{ results.pages }}{% endif %}</span>
     {% if results.has_more or (results.pages and results.page < results.pages) %}
     <a href="{{ request.url.include_query_params(page=results.page + 1) }}">Next</a>
     {% endif %}

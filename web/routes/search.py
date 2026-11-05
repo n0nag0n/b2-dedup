@@ -21,6 +21,7 @@ def search_page(
     hidden: str = "",
     sort: str = "path",
     page: int = 1,
+    fpage: int = 1,
 ):
     hide_hidden = hidden != "1"
     results = None
@@ -35,6 +36,7 @@ def search_page(
             hide_hidden=hide_hidden,
             sort=sort,
             page=page,
+            folder_page=fpage,
         )
         in_set = set(restore_set.list_ids(session_key(request)))
         for item in results["files"]:

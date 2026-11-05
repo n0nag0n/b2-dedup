@@ -98,30 +98,58 @@
 </section>
 
 <section id="scratch">
-    <h2 class="section-title">Scratch drive</h2>
+    <h2 class="section-title">Scratch drives</h2>
     <p class="lede">
         Drop files or folders on the <a href="/scratch">Scratch</a> page and they are
-        ingested as drive <strong>{{ scratch_drive }}</strong>, exactly like a
-        plugged-in disk. Staged copies are removed after a successful ingest.
+        ingested as the scratch drive you select, exactly like a plugged-in disk.
+        Staged copies are removed after a successful ingest. The B2 bucket is the
+        one set above.
     </p>
     <p>
         {{ scratch.batches }} staged batch{{ "" if scratch.batches == 1 else "es" }} ·
         {{ "{:,}".format(scratch.files) }} files · {{ scratch.bytes_fmt }}
-        {% if scratch.free_fmt %}· {{ scratch.free_fmt }} free on the data disk{% endif %}
-        · <code class="wrap">{{ scratch.path }}</code>
+        {% if scratch.free_fmt %}· {{ scratch.free_fmt }} free on that disk{% endif %}
+        · <code class="wrap">{{ scratch_staging }}</code>
+    </p>
+    <ul class="copy-list">
+        {% for name in scratch_drives %}
+        <li>
+            <span>{{ name }}</span>
+            {% if name == scratch_drive %}<span class="badge">selected</span>{% endif %}
+            {% if scratch_drives|length > 1 %}
+            <form method="post" action="/settings/scratch/remove" class="inline">
+                <input type="hidden" name="drive_name" value="{{ name }}">
+                <button type="submit" class="linkish">Remove</button>
+            </form>
+            {% endif %}
+        </li>
+        {% endfor %}
+    </ul>
+    <form method="post" action="/settings/scratch/add" class="restore-form">
+        <label>Add a scratch drive
+            <input name="drive_name" type="text" required maxlength="80" placeholder="Receipts">
+        </label>
+        <p class="hint">
+            The name appears on Home and Browse and is the folder prefix in B2.
+            Adding a drive does not rename files already in the vault.
+        </p>
+        <p class="actions">
+            <button type="submit">Add drive</button>
+        </p>
+    </form>
+    <p class="hint">
+        New uploads are stored in <code class="wrap">{{ scratch_staging }}</code>.
+        <a href="/scratch?browse=1">Choose a different folder</a> on the Scratch page.
+        Pick a folder that is only for Scratch: batches there are deleted after a
+        successful ingest, or after the retention period if they were never ingested.
     </p>
     <form method="post" action="/settings/scratch" class="restore-form">
-        <label>Drive name for browser uploads
-            <input name="drive_name" type="text" value="{{ scratch_drive }}">
-        </label>
         <label>Delete staged uploads after (days)
             <input name="retention_days" type="number" min="1" max="365" value="{{ scratch_retention }}">
         </label>
         <p class="hint">
-            The name appears on Home and Browse and is the folder prefix in B2.
-            Changing it later makes a new drive in the catalog; existing rows keep
-            the old name. Staged batches are swept at startup once they are older
-            than this, even if they were never ingested.
+            Staged batches are swept at startup once they are older than this,
+            even if they were never ingested.
         </p>
         <p class="actions">
             <button type="submit">Save Scratch settings</button>

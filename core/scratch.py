@@ -1,12 +1,14 @@
-"""Browser-upload staging for the Scratch drive.
+"""Browser-upload staging for scratch drives.
 
-Dropped files land in ``data/scratch/<batch>/`` and are then handed to the
-normal ingest job. That means hashing, junk rules, dedup pointers, and catalog
-rows behave exactly as they do for a plugged-in disk.
+Dropped files land in the configured staging folder (``data/scratch/<batch>/``
+unless a different folder was chosen) and are then handed to the normal ingest
+job. Hashing, junk rules, dedup pointers, and catalog rows behave exactly as
+they do for a plugged-in disk.
 
 A successful ingest removes its staged batch. A batch with per-file errors is
 kept so it can be retried, and old batches expire after the configured number
-of days.
+of days. Batches left in a previous staging folder stay visible so they can
+still be ingested or deleted.
 """
 from __future__ import annotations
 
@@ -24,11 +26,12 @@ from core.catalog import format_size
 from core.junk import is_ingest_skip
 from core.paths import SCRATCH_DIR
 
-MIN_FREE_BYTES = 1024 ** 3  # keep at least 1 GiB free on the data disk
+MIN_FREE_BYTES = 1024 ** 3  # keep at least 1 GiB free on the staging disk
 COPY_CHUNK = 1024 * 1024
 INCOMING_DIR_NAME = ".incoming"
 BATCH_RE = re.compile(r"^\d{8}-\d{6}-[0-9a-f]{8}$")
 MAX_REL_PATH = 1024
+BROWSE_LIMIT = 300
 
 
 class ScratchError(ValueError):
@@ -44,15 +47,195 @@ def new_batch_id() -> str:
     return f"{stamp}-{uuid.uuid4().hex[:8]}"
 
 
+def staging_root() -> Path:
+    """Folder that receives new uploads.
+
+    An empty config uses ``SCRATCH_DIR`` (``data/scratch``). Tests patch that
+    constant; a saved absolute path overrides it.
+    """
+    from core.config import get_scratch_staging_dir
+
+    raw = get_scratch_staging_dir()
+    if raw:
+        path = Path(raw).expanduser()
+        if path.is_absolute():
+            try:
+                return path.resolve()
+            except OSError:
+                return path
+    return SCRATCH_DIR
+
+
+def scratch_roots() -> list[Path]:
+    """Staging folders whose batches this app is allowed to list or delete.
+
+    Includes the active folder, the default ``data/scratch``, and folders the
+    user used before changing the setting. Cleanup never walks outside these.
+    """
+    from core.config import get_scratch_staging_history
+
+    candidates = [staging_root(), SCRATCH_DIR]
+    for item in get_scratch_staging_history():
+        candidates.append(Path(item).expanduser())
+    roots: list[Path] = []
+    seen: set[str] = set()
+    for path in candidates:
+        try:
+            if not path.is_absolute():
+                continue
+            resolved = path.resolve()
+        except OSError:
+            continue
+        key = str(resolved)
+        if key in seen:
+            continue
+        seen.add(key)
+        roots.append(resolved)
+    return roots
+
+
 def batch_dir(batch_id: str, *, must_exist: bool = False) -> Path | None:
-    """Return the folder for a batch id, or None when the id is not ours."""
+    """Return the folder for a batch id, or None when the id is not ours.
+
+    New batches are created in the active staging folder. Existing batches are
+    found in any folder Scratch has used, so a settings change does not hide
+    an upload that still needs to be ingested.
+    """
     text = (batch_id or "").strip()
     if not BATCH_RE.fullmatch(text):
         return None
-    path = SCRATCH_DIR / text
-    if must_exist and not path.is_dir():
+    if must_exist:
+        for root in scratch_roots():
+            path = root / text
+            if path.is_dir():
+                return path
         return None
-    return path
+    return staging_root() / text
+
+
+def resolve_browse_dir(raw: str) -> Path:
+    """Resolve a folder the staging browser is allowed to list."""
+    text = (raw or "").strip()
+    if not text:
+        raise ScratchError("Choose a folder.")
+    path = Path(text).expanduser()
+    try:
+        resolved = path.resolve()
+    except OSError as exc:
+        raise ScratchError("Could not open that folder.") from exc
+    if not resolved.is_dir():
+        raise ScratchError("That path is not a folder on this computer.")
+    return resolved
+
+
+def validate_staging_dir(raw: str) -> Path:
+    """Accept a host folder as the place new Scratch uploads are stored."""
+    resolved = resolve_browse_dir(raw)
+    from core.volumes import is_forbidden_root
+
+    if is_forbidden_root(resolved):
+        raise ScratchError("Choose a folder inside a disk, not a system directory.")
+    if not os.access(resolved, os.W_OK | os.X_OK):
+        raise ScratchError("That folder is not writable by StorageInsights.")
+    return resolved
+
+
+def list_child_dirs(path: Path) -> tuple[list[dict], bool]:
+    """Subfolders of ``path`` for the staging browser. Skips symlinks."""
+    try:
+        children = list(path.iterdir())
+    except OSError as exc:
+        raise ScratchError("That folder could not be listed.") from exc
+    children.sort(key=lambda item: item.name.lower())
+    found: list[dict] = []
+    truncated = False
+    try:
+        current = path.resolve()
+    except OSError:
+        current = path
+    for child in children:
+        if len(found) >= BROWSE_LIMIT:
+            truncated = True
+            break
+        try:
+            if child.is_symlink():
+                target = child.resolve()
+                if not target.is_dir() or target == current:
+                    continue
+                found.append({"name": child.name or str(child), "path": str(target)})
+                continue
+            if not child.is_dir():
+                continue
+            found.append({"name": child.name or str(child), "path": str(child.resolve())})
+        except OSError:
+            continue
+    return found, truncated
+
+
+def folder_crumbs(path: Path) -> list[dict]:
+    parts = path.parts
+    if not parts:
+        return []
+    crumbs = []
+    acc = Path(parts[0])
+    crumbs.append({"label": parts[0], "path": str(acc)})
+    for part in parts[1:]:
+        acc = acc / part
+        crumbs.append({"label": part, "path": str(acc)})
+    return crumbs
+
+
+def parent_dir(path: Path) -> str:
+    parent = path.parent
+    if parent == path:
+        return ""
+    return str(parent)
+
+
+def create_child_dir(parent: Path, name: str) -> Path:
+    """Create one folder inside ``parent`` for the staging browser."""
+    from core.volumes import is_forbidden_root
+
+    text = (name or "").strip()
+    if (
+        not text
+        or text in {".", ".."}
+        or "/" in text
+        or "\\" in text
+        or "\x00" in text
+    ):
+        raise ScratchError("Use a folder name without slashes.")
+    if len(text) > 255:
+        raise ScratchError("That folder name is too long.")
+    parent = resolve_browse_dir(str(parent))
+    if is_forbidden_root(parent):
+        raise ScratchError("Create the folder inside a disk, not in a system directory.")
+    if not os.access(parent, os.W_OK | os.X_OK):
+        raise ScratchError("That folder is not writable.")
+    dest = parent / text
+    try:
+        dest.relative_to(parent)
+    except ValueError as exc:
+        raise ScratchError("That folder name is not allowed.") from exc
+    try:
+        dest.mkdir(parents=False, exist_ok=True)
+    except OSError as exc:
+        raise ScratchError(f"Could not create that folder: {exc}") from exc
+    if not dest.is_dir():
+        raise ScratchError("Could not create that folder.")
+    return dest.resolve()
+
+
+def staging_is_ready(path: Path | None = None) -> bool:
+    """True when new uploads can be created in the active staging folder."""
+    root = path or staging_root()
+    try:
+        if root.is_dir():
+            return os.access(root, os.W_OK | os.X_OK)
+        parent = root.parent
+        return parent.is_dir() and os.access(parent, os.W_OK | os.X_OK)
+    except OSError:
+        return False
 
 
 def sanitize_rel_path(raw: str | Path) -> str:
@@ -101,7 +284,7 @@ def join_prefix(prefix: str, rel_path: str) -> str:
 
 
 def _incoming_dir() -> Path:
-    path = SCRATCH_DIR / INCOMING_DIR_NAME
+    path = staging_root() / INCOMING_DIR_NAME
     path.mkdir(parents=True, exist_ok=True)
     return path
 
@@ -133,7 +316,7 @@ def save_upload(
     free = shutil.disk_usage(batch).free
     if free <= MIN_FREE_BYTES:
         raise ScratchDiskFull(
-            "The data disk is nearly full. Free some space, then try the upload again."
+            "The staging disk is nearly full. Free some space, then try the upload again."
         )
     budget = free - MIN_FREE_BYTES
 
@@ -148,7 +331,7 @@ def save_upload(
                 written += len(chunk)
                 if written > budget:
                     raise ScratchDiskFull(
-                        "That upload would leave less than 1 GiB free on the data disk."
+                        "That upload would leave less than 1 GiB free on the staging disk."
                     )
                 handle.write(chunk)
         os.replace(tmp, target)
@@ -263,28 +446,39 @@ def batch_is_active(batch_id: str) -> bool:
 
 
 def list_batches() -> list[dict]:
-    if not SCRATCH_DIR.is_dir():
-        return []
     active = _active_scratch_sources()
     batches = []
-    try:
-        entries = list(SCRATCH_DIR.iterdir())
-    except OSError:
-        return []
-    for entry in entries:
-        if not entry.is_dir() or not BATCH_RE.fullmatch(entry.name):
+    seen: set[str] = set()
+    for root in scratch_roots():
+        if not root.is_dir():
             continue
         try:
-            mtime = entry.stat().st_mtime
+            entries = list(root.iterdir())
         except OSError:
             continue
-        stats = batch_stats(entry.name)
-        stats["mtime"] = mtime
-        try:
-            stats["active"] = str(entry.resolve()) in active
-        except Exception:
-            stats["active"] = False
-        batches.append(stats)
+        for entry in entries:
+            if not entry.is_dir() or not BATCH_RE.fullmatch(entry.name):
+                continue
+            try:
+                resolved = entry.resolve()
+                mtime = entry.stat().st_mtime
+            except OSError:
+                continue
+            key = str(resolved)
+            if key in seen:
+                continue
+            seen.add(key)
+            files, total = _batch_files(entry)
+            batches.append({
+                "id": entry.name,
+                "path": str(resolved),
+                "files": files,
+                "bytes": total,
+                "bytes_fmt": format_size(total),
+                "when": datetime.fromtimestamp(mtime).strftime("%Y-%m-%d %H:%M"),
+                "mtime": mtime,
+                "active": key in active,
+            })
     batches.sort(key=lambda item: item["mtime"], reverse=True)
     return batches
 
@@ -293,12 +487,14 @@ def scratch_usage() -> dict:
     batches = list_batches()
     files = sum(item["files"] for item in batches)
     total = sum(item["bytes"] for item in batches)
+    root = staging_root()
     try:
-        free = shutil.disk_usage(SCRATCH_DIR if SCRATCH_DIR.is_dir() else SCRATCH_DIR.parent).free
+        probe = root if root.is_dir() else root.parent
+        free = shutil.disk_usage(probe).free
     except OSError:
         free = 0
     return {
-        "path": str(SCRATCH_DIR),
+        "path": str(root),
         "batches": len(batches),
         "files": files,
         "bytes": total,
@@ -335,14 +531,19 @@ def clear_batches() -> int:
 
 
 def is_scratch_path(path: str | Path) -> bool:
-    """True only for paths strictly inside the staging root."""
+    """True only for paths strictly inside a staging folder Scratch has used."""
     try:
         resolved = Path(path).resolve()
-        root = SCRATCH_DIR.resolve()
-        resolved.relative_to(root)
-    except (OSError, RuntimeError, ValueError):
+    except (OSError, RuntimeError):
         return False
-    return resolved != root
+    for root in scratch_roots():
+        try:
+            resolved.relative_to(root)
+        except ValueError:
+            continue
+        if resolved != root:
+            return True
+    return False
 
 
 def cleanup_after_ingest(source: str | Path) -> bool:
@@ -364,29 +565,31 @@ def cleanup_stale_batches(days: int | None = None) -> int:
 
         days = get_scratch_retention_days()
     removed = 0
-    if not SCRATCH_DIR.is_dir():
-        return removed
     cutoff = datetime.now(timezone.utc) - timedelta(days=days)
-    try:
-        entries = list(SCRATCH_DIR.iterdir())
-    except OSError:
-        return removed
-    for entry in entries:
-        if not entry.is_dir() or not BATCH_RE.fullmatch(entry.name):
+    partial_cutoff = time.time() - 86400
+    for root in scratch_roots():
+        if not root.is_dir():
             continue
         try:
-            mtime = datetime.fromtimestamp(entry.stat().st_mtime, tz=timezone.utc)
+            entries = list(root.iterdir())
         except OSError:
             continue
-        if mtime < cutoff:
-            shutil.rmtree(entry, ignore_errors=True)
-            removed += 1
+        for entry in entries:
+            if not entry.is_dir() or not BATCH_RE.fullmatch(entry.name):
+                continue
+            try:
+                mtime = datetime.fromtimestamp(entry.stat().st_mtime, tz=timezone.utc)
+            except OSError:
+                continue
+            if mtime < cutoff:
+                shutil.rmtree(entry, ignore_errors=True)
+                removed += 1
 
-    # Abandoned .part files never reached a batch; they are safe to remove
-    # after a day even if a batch is still inside its retention window.
-    incoming = SCRATCH_DIR / INCOMING_DIR_NAME
-    if incoming.is_dir():
-        partial_cutoff = time.time() - 86400
+        # Abandoned .part files never reached a batch; they are safe to remove
+        # after a day even if a batch is still inside its retention window.
+        incoming = root / INCOMING_DIR_NAME
+        if not incoming.is_dir():
+            continue
         for part in incoming.glob("*.part"):
             try:
                 if part.stat().st_mtime < partial_cutoff:

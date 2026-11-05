@@ -1,5 +1,6 @@
 """Persistent app config (bucket, restore destination, last verify)."""
 import json
+from pathlib import Path
 
 from core.paths import DEFAULT_MAX_WORKERS, GUI_CONFIG_PATH
 
@@ -130,24 +131,139 @@ def set_download_expiry_hours(n) -> int:
     return _set_download_int("expiry_hours", n)
 
 
-# --- Scratch drive (browser uploads) ----------------------------------------
+# --- Scratch drives (browser uploads) ---------------------------------------
+# Several named drives can receive browser drops. The selected name is the
+# one the Scratch page uses until the user picks another. Staging files live
+# in scratch_staging_dir when set, otherwise data/scratch.
 
 DEFAULT_SCRATCH_DRIVE_NAME = "Scratch"
 DEFAULT_SCRATCH_RETENTION_DAYS = 7
+_STAGING_HISTORY_LIMIT = 8
+
+
+def normalize_drive_name(name: str) -> str | None:
+    """A catalog drive name: no slashes, no control characters."""
+    text = (name or "").strip()
+    if not text or len(text) > 80:
+        return None
+    if "/" in text or "\\" in text:
+        return None
+    if any(ord(ch) < 32 for ch in text):
+        return None
+    return text
+
+
+def get_scratch_drives() -> list[str]:
+    """Names the Scratch page can ingest into, oldest addition first.
+
+    A config written before this list existed has only ``scratch_drive_name``.
+    That single name stays the whole list so a renamed drive is not joined
+    by a new default called Scratch.
+    """
+    cfg = load_config()
+    raw = cfg.get("scratch_drives")
+    names: list[str] = []
+    seen: set[str] = set()
+    if isinstance(raw, list):
+        for item in raw:
+            name = normalize_drive_name(str(item))
+            if not name or name.lower() in seen:
+                continue
+            names.append(name)
+            seen.add(name.lower())
+    legacy = normalize_drive_name(str(cfg.get("scratch_drive_name") or ""))
+    if names:
+        if legacy and legacy.lower() not in seen:
+            names.insert(0, legacy)
+        return names
+    if legacy:
+        return [legacy]
+    return [DEFAULT_SCRATCH_DRIVE_NAME]
 
 
 def get_scratch_drive_name() -> str:
-    name = (load_config().get("scratch_drive_name") or "").strip()
-    if not name or "/" in name or "\\" in name:
-        return DEFAULT_SCRATCH_DRIVE_NAME
-    return name
+    """The scratch drive selected for the next upload."""
+    names = get_scratch_drives()
+    selected = normalize_drive_name(str(load_config().get("scratch_drive_name") or ""))
+    if selected:
+        for name in names:
+            if name.lower() == selected.lower():
+                return name
+    return names[0]
 
 
 def set_scratch_drive_name(name: str) -> str:
-    text = (name or "").strip()
-    if not text or "/" in text or "\\" in text:
-        text = get_scratch_drive_name()
-    update_config(scratch_drive_name=text)
+    """Add ``name`` to the scratch drives if needed, and select it.
+
+    An invalid name leaves the current selection unchanged.
+    """
+    text = normalize_drive_name(name)
+    if not text:
+        return get_scratch_drive_name()
+    names = get_scratch_drives()
+    canonical = text
+    found = False
+    for existing in names:
+        if existing.lower() == text.lower():
+            canonical = existing
+            found = True
+            break
+    if not found:
+        names.append(text)
+    update_config(scratch_drives=names, scratch_drive_name=canonical)
+    return canonical
+
+
+def remove_scratch_drive(name: str) -> list[str]:
+    """Drop a name from the list. The last remaining drive is kept."""
+    text = normalize_drive_name(name)
+    names = get_scratch_drives()
+    if not text or len(names) <= 1:
+        return names
+    kept = [item for item in names if item.lower() != text.lower()]
+    if len(kept) == len(names):
+        return names
+    if not kept:
+        kept = [DEFAULT_SCRATCH_DRIVE_NAME]
+    selected = get_scratch_drive_name()
+    if selected.lower() == text.lower() or selected not in kept:
+        selected = kept[0]
+    update_config(scratch_drives=kept, scratch_drive_name=selected)
+    return kept
+
+
+def get_scratch_staging_dir() -> str:
+    """Absolute staging folder from config, or ``""`` to use the default."""
+    return (load_config().get("scratch_staging_dir") or "").strip()
+
+
+def get_scratch_staging_history() -> list[str]:
+    """Earlier staging folders, so batches left behind can still be finished."""
+    raw = load_config().get("scratch_staging_history")
+    if not isinstance(raw, list):
+        return []
+    paths: list[str] = []
+    seen: set[str] = set()
+    for item in raw:
+        text = str(item).strip()
+        if not text or text in seen:
+            continue
+        if not Path(text).expanduser().is_absolute():
+            continue
+        paths.append(text)
+        seen.add(text)
+    return paths
+
+
+def set_scratch_staging_dir(path: str) -> str:
+    """Remember ``path`` as the folder new uploads are staged in."""
+    text = (path or "").strip()
+    previous = get_scratch_staging_dir()
+    history = get_scratch_staging_history()
+    if previous and previous != text and previous not in history:
+        history.append(previous)
+    history = [item for item in history if item != text][-_STAGING_HISTORY_LIMIT:]
+    update_config(scratch_staging_dir=text, scratch_staging_history=history)
     return text
 
 

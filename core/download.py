@@ -103,13 +103,18 @@ def safe_filename(name: str) -> str:
     return name
 
 
-def content_disposition(filename: str) -> str:
-    """RFC 6266 attachment header with a UTF-8 name for non-ASCII files."""
+def content_disposition(filename: str, *, inline: bool = False) -> str:
+    """RFC 6266 header with a UTF-8 name for non-ASCII files.
+
+    ``inline`` lets the browser render the body (a preview). The default
+    still downloads it as an attachment.
+    """
     name = safe_filename(filename)
     fallback = "".join(
         ch if 32 <= ord(ch) < 127 and ch not in '"\\' else "_" for ch in name
     ) or "download"
-    return f"attachment; filename=\"{fallback}\"; filename*=UTF-8''{urllib.parse.quote(name)}"
+    kind = "inline" if inline else "attachment"
+    return f"{kind}; filename=\"{fallback}\"; filename*=UTF-8''{urllib.parse.quote(name)}"
 
 
 def zip_arcname(drive_name: str, file_path: str) -> str:
@@ -252,9 +257,15 @@ def stream_downloaded_file(downloaded, chunk_size: int = CHUNK_SIZE):
         raise errors[0]
 
 
-def open_remote(b2, remote_path: str):
-    """Open a B2 object for streaming. Raises if it is missing or forbidden."""
-    return b2.bucket.download_file_by_name(remote_path)
+def open_remote(b2, remote_path: str, byte_range: tuple[int, int] | None = None):
+    """Open a B2 object for streaming. Raises if it is missing or forbidden.
+
+    ``byte_range`` is an inclusive ``(start, end)`` pair, used so a video or
+    PDF preview can seek without pulling the whole object first.
+    """
+    if byte_range is None:
+        return b2.bucket.download_file_by_name(remote_path)
+    return b2.bucket.download_file_by_name(remote_path, range_=byte_range)
 
 
 # --------------------------------------------------------------------------

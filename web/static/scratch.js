@@ -10,7 +10,6 @@
     const pickFolder = document.getElementById("scratch-pick-folder");
     const driveInput = document.getElementById("scratch-drive-name");
     const prefixInput = document.getElementById("scratch-prefix");
-    const bucketInput = document.getElementById("scratch-bucket");
     const progress = document.getElementById("scratch-progress");
     const status = document.getElementById("scratch-status");
     const log = document.getElementById("scratch-log");
@@ -157,6 +156,19 @@
         return walk();
     }
 
+    function selectedDrive() {
+        return driveInput ? driveInput.value : "";
+    }
+
+    function syncDriveFields() {
+        const name = selectedDrive();
+        document.querySelectorAll("form[action='/scratch/finish'] input[name='drive_name']").forEach((input) => {
+            input.value = name;
+        });
+        const removeName = document.getElementById("scratch-remove-name");
+        if (removeName) removeName.value = name;
+    }
+
     function uploadOne(file, relPath, batchId) {
         return new Promise((resolve, reject) => {
             const body = new FormData();
@@ -200,8 +212,7 @@
     async function finish(batchId) {
         const body = new URLSearchParams();
         body.set("batch", batchId);
-        body.set("drive_name", driveInput ? driveInput.value : "");
-        body.set("bucket", bucketInput ? bucketInput.value : "");
+        body.set("drive_name", selectedDrive());
         setStatus("Upload complete. Starting the ingest job…");
         try {
             const response = await fetch("/scratch/finish", {
@@ -283,6 +294,20 @@
             return;
         }
         await finish(batchId);
+    }
+
+    syncDriveFields();
+    if (driveInput) {
+        driveInput.addEventListener("change", () => {
+            syncDriveFields();
+            const body = new URLSearchParams();
+            body.set("drive_name", selectedDrive());
+            fetch("/scratch/drives/select", {
+                method: "POST",
+                headers: { Accept: "application/json" },
+                body,
+            }).catch(() => {});
+        });
     }
 
     if (pickFiles && filesInput) {

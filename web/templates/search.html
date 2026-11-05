@@ -2,7 +2,7 @@
 {% block title %}Search · StorageInsights{% endblock %}
 {% block content %}
 <h1>Search</h1>
-<p class="lede">Looks across every drive. Junk and version-control trees are hidden unless you ask for them.</p>
+<p class="lede">Looks across every drive. A matching folder is listed on its own, and the same file stored in more than one place is grouped together. Junk and version-control trees are hidden unless you ask for them.</p>
 
 <form class="filters" method="get" action="/search">
     <p class="search">
@@ -59,52 +59,111 @@
 </form>
 
 {% if results %}
-<p class="meta">Showing <strong>{{ results.total_fmt }}</strong> files</p>
+{% if results.folder_total %}
+<h2 class="results-heading">Folders</h2>
+<p class="meta">{{ results.folder_label }}</p>
+<ul class="hit-list">
+    {% for folder in results.folders %}
+    <li>
+        <a href="/browse?drive={{ folder.drive_name | urlencode }}&amp;path={{ folder.path | urlencode }}" title="{{ folder.drive_name }}/{{ folder.path }}">{{ folder.name }}</a>
+        <span class="badge">{{ folder.drive_name }}</span>
+        {% if folder.parent %}<span class="path-hint" title="{{ folder.path }}">{{ folder.parent }}</span>{% endif %}
+        {% if folder.others %}
+        <details class="places">
+            <summary>{{ folder.others_label }}</summary>
+            <ul>
+                {% for drive in folder.others %}
+                <li>
+                    <span class="badge">{{ drive }}</span>
+                    <a href="/browse?drive={{ drive | urlencode }}&amp;path={{ folder.path | urlencode }}">Open</a>
+                </li>
+                {% endfor %}
+            </ul>
+        </details>
+        {% endif %}
+    </li>
+    {% endfor %}
+</ul>
+{% if results.folder_pages > 1 %}
+<nav class="pager" aria-label="Folders">
+    {% if results.folder_page > 1 %}
+    <a href="{{ request.url.include_query_params(fpage=results.folder_page - 1) }}">Previous</a>
+    {% endif %}
+    <span>Page {{ results.folder_page }} of {{ results.folder_pages }}</span>
+    {% if results.folder_has_more %}
+    <a href="{{ request.url.include_query_params(fpage=results.folder_page + 1) }}">Next</a>
+    {% endif %}
+</nav>
+{% endif %}
+{% endif %}
+
+<h2 class="results-heading">Files</h2>
+<p class="meta">{{ results.file_label }}</p>
 {% if results.files %}
 <table class="files">
     <thead>
         <tr>
-            <th></th>
+            <th>Name</th>
             <th>Drive</th>
-            <th>Path</th>
             <th>Size</th>
             <th>Taken</th>
             <th>Type</th>
+            <th><span class="sr-only">Actions</span></th>
         </tr>
     </thead>
     <tbody>
         {% for f in results.files %}
         <tr>
             <td>
+                <a class="file-name" href="/file/{{ f.id }}" title="{{ f.drive_name }}/{{ f.file_path }}">{{ f.name }}</a>
+                {% if f.other_count %}
+                <details class="places">
+                    <summary>{{ f.places_label }}</summary>
+                    <ul>
+                        {% for p in f.places %}
+                        <li>
+                            <span class="badge">{{ p.drive_name }}</span>
+                            <a href="/file/{{ p.id }}" title="{{ p.drive_name }}/{{ p.file_path }}">{{ p.file_path }}</a>
+                        </li>
+                        {% endfor %}
+                    </ul>
+                    {% if f.places_more %}
+                    <p class="more-places"><a href="/file/{{ f.id }}">And {{ f.places_more_fmt }} more</a></p>
+                    {% endif %}
+                </details>
+                {% endif %}
+            </td>
+            <td><span class="badge">{{ f.drive_name }}</span></td>
+            <td class="num">{{ f.size_fmt }}</td>
+            <td class="num muted">{{ f.taken_fmt or f.mtime_fmt }}</td>
+            <td class="muted">{{ f.file_type or "—" }}</td>
+            <td class="row-actions">
                 {% if f.in_set %}
                 <form method="post" action="/restore-set/remove">
                     <input type="hidden" name="file_id" value="{{ f.id }}">
                     <input type="hidden" name="next" value="{{ request.url }}">
-                    <button type="submit" class="linkish" title="Remove from restore set">✓</button>
+                    <button type="submit" class="icon-btn" aria-label="Remove from restore set" title="Remove from restore set">✓</button>
                 </form>
                 {% else %}
                 <form method="post" action="/restore-set/add">
                     <input type="hidden" name="file_id" value="{{ f.id }}">
                     <input type="hidden" name="next" value="{{ request.url }}">
-                    <button type="submit" class="linkish" title="Add to restore set">＋</button>
+                    <button type="submit" class="icon-btn" aria-label="Add to restore set" title="Add to restore set">＋</button>
                 </form>
                 {% endif %}
-                <a href="/download/{{ f.id }}" class="linkish" title="Download this file">⬇</a>
+                <a class="icon-btn" href="/download/{{ f.id }}" aria-label="Download" title="Download">⬇</a>
             </td>
-            <td><span class="badge">{{ f.drive_name }}</span></td>
-            <td><a href="/file/{{ f.id }}">{{ f.file_path }}</a></td>
-            <td class="num">{{ f.size_fmt }}</td>
-            <td class="muted">{{ f.taken_fmt or f.mtime_fmt }}</td>
-            <td class="muted">{{ f.file_type }}{% if not f.is_original %} · copy{% endif %}</td>
         </tr>
         {% endfor %}
     </tbody>
 </table>
 {% include "_pager.html" %}
+{% elif results.folder_total %}
+<p>No files with that name.</p>
 {% else %}
-<p>No files match that search.</p>
+<p>No files or folders match that search.</p>
 {% endif %}
 {% elif q %}
-<p>No files match that search.</p>
+<p>No files or folders match that search.</p>
 {% endif %}
 {% endblock %}
