@@ -1,7 +1,7 @@
 {% extends "layout.html" %}
 {% block title %}Scratch · StorageInsights{% endblock %}
 {% block head %}
-<script defer src="/static/scratch.js"></script>
+<script defer src="/static/scratch.js?v=3"></script>
 {% endblock %}
 {% block content %}
 <h1>Scratch</h1>
@@ -15,7 +15,7 @@
 {% if not bucket %}
 <p class="warn" role="status">
     No B2 bucket is set yet. You can still drop files, but the ingest job uses
-    the bucket from <a href="/settings">Settings</a>.
+    the bucket from <a href="/settings#connection">Settings</a>.
 </p>
 {% endif %}
 
@@ -122,7 +122,8 @@
         <button type="button" id="scratch-pick-folder" class="secondary">Choose folder</button>
     </p>
     <p class="hint">Files are staged in the folder above, then ingested.
-        Very large files briefly use the system temp folder as well.</p>
+        Files larger than 248 MB are sent in pieces.
+        If one file fails, the rest of the folder keeps uploading.</p>
 </section>
 <input id="scratch-files" type="file" multiple class="sr-only">
 <input id="scratch-folder" type="file" webkitdirectory multiple class="sr-only">
@@ -135,6 +136,7 @@
 <section aria-live="polite">
     <progress id="scratch-progress" class="scratch-progress" max="100" value="0">0%</progress>
     <p id="scratch-status" class="muted">Nothing queued yet.</p>
+    <div id="scratch-actions" class="actions" hidden></div>
     <pre id="scratch-log" class="log scratch-log" hidden></pre>
 </section>
 
@@ -159,11 +161,11 @@
         <tbody>
             {% for b in batches %}
             <tr>
-                <td><code>{{ b.id }}</code></td>
-                <td class="num">{{ "{:,}".format(b.files) }}</td>
-                <td class="num">{{ b.bytes_fmt }}</td>
-                <td class="muted">{{ b.when }}</td>
-                <td>
+                <td class="cell-title"><code>{{ b.id }}</code></td>
+                <td class="num"><span class="cell-label">Files</span>{{ "{:,}".format(b.files) }}</td>
+                <td class="num"><span class="cell-label">Size</span>{{ b.bytes_fmt }}</td>
+                <td class="muted"><span class="cell-label">Uploaded</span>{{ b.when }}</td>
+                <td><span class="cell-label">Actions</span>
                     {% if b.active %}
                     <span class="badge">ingest running</span>
                     {% else %}
@@ -187,7 +189,7 @@
 </section>
 {% endif %}
 
-<p class="muted">
+<p class="muted" id="scratch-usage">
     {{ usage.batches }} staged batch{{ "" if usage.batches == 1 else "es" }} ·
     {{ "{:,}".format(usage.files) }} files · {{ usage.bytes_fmt }}
     {% if usage.free_fmt %}· {{ usage.free_fmt }} free on that disk{% endif %}

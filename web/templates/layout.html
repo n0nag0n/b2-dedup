@@ -2,10 +2,12 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+    {% include "_theme_boot.html" %}
     <title>{% block title %}StorageInsights{% endblock %}</title>
     <link rel="stylesheet" href="/static/app.css">
     <script defer src="/static/alpine.min.js"></script>
+    <script defer src="/static/theme.js"></script>
     {% block head %}{% endblock %}
 </head>
 <body>
@@ -13,11 +15,18 @@
         <div class="top-inner">
             <a class="brand" href="/">StorageInsights</a>
             <p class="tagline">A searchable home vault for old drives</p>
-            <nav>
+            <button type="button" class="theme-toggle" id="theme-toggle" aria-pressed="false">
+                <span class="label-to-dark">Dark<span class="label-extra"> mode</span></span>
+                <span class="label-to-light">Light<span class="label-extra"> mode</span></span>
+            </button>
+            <input type="checkbox" id="nav-toggle" class="nav-toggle-input" aria-controls="site-nav">
+            <label for="nav-toggle" class="nav-toggle">
+                <span class="when-closed">Menu</span>
+                <span class="when-open">Close</span>
+            </label>
+            <nav id="site-nav">
                 <a href="/" {% if request.url.path == '/' %}aria-current="page"{% endif %}>Home</a>
                 <a href="/search" {% if request.url.path.startswith('/search') %}aria-current="page"{% endif %}>Search</a>
-                <a href="/library" {% if request.url.path.startswith('/library') or request.url.path.startswith('/timeline') or request.url.path.startswith('/moment') %}aria-current="page"{% endif %}>Library</a>
-                <a href="/browse" {% if request.url.path.startswith('/browse') %}aria-current="page"{% endif %}>Browse</a>
                 <a href="/ingest" {% if request.url.path.startswith('/ingest') %}aria-current="page"{% endif %}>Ingest</a>
                 <a href="/scratch" {% if request.url.path.startswith('/scratch') %}aria-current="page"{% endif %}>Scratch</a>
                 <a href="/restore-set" {% if request.url.path.startswith('/restore') %}aria-current="page"{% endif %}>

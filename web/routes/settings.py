@@ -129,8 +129,8 @@ def settings_save(
     set_bucket_name(bucket_name)
     set_restore_dest(restore_dest)
     set_workers(workers)
-    set_notice(request, "Settings saved.")
-    return RedirectResponse("/settings", status_code=303)
+    set_notice(request, "Connection saved.")
+    return RedirectResponse("/settings#connection", status_code=303)
 
 
 @router.post("/settings/downloads")
@@ -171,29 +171,29 @@ def settings_add_ingest_root(request: Request, folder: str = Form("")):
     raw = folder.strip()
     if not raw:
         set_notice(request, "Enter a folder to watch for ingest.")
-        return RedirectResponse("/settings", status_code=303)
+        return RedirectResponse("/settings#ingest", status_code=303)
     path = Path(raw).expanduser()
     try:
         if not path.is_dir():
             set_notice(request, "That path is not a folder on this computer.")
-            return RedirectResponse("/settings", status_code=303)
+            return RedirectResponse("/settings#ingest", status_code=303)
         resolved = path.resolve()
     except OSError:
         set_notice(request, "Could not open that folder.")
-        return RedirectResponse("/settings", status_code=303)
+        return RedirectResponse("/settings#ingest", status_code=303)
     if is_forbidden_root(resolved):
         set_notice(request, "Choose the disk or folder you want to back up, not a system directory.")
-        return RedirectResponse("/settings", status_code=303)
+        return RedirectResponse("/settings#ingest", status_code=303)
     add_ingest_extra_root(str(resolved))
     set_notice(request, f"Ingest will also look in {resolved}.")
-    return RedirectResponse("/settings", status_code=303)
+    return RedirectResponse("/settings#ingest", status_code=303)
 
 
 @router.post("/settings/ingest-root/remove")
 def settings_remove_ingest_root(request: Request, folder: str = Form("")):
     remove_ingest_extra_root(folder.strip())
     set_notice(request, "Removed that extra folder.")
-    return RedirectResponse("/settings", status_code=303)
+    return RedirectResponse("/settings#ingest", status_code=303)
 
 
 @router.post("/settings/scratch")
@@ -262,7 +262,7 @@ def settings_verify(
     bucket = get_bucket_name()
     if not bucket:
         set_notice(request, "Set a B2 bucket first.")
-        return RedirectResponse("/settings", status_code=303)
+        return RedirectResponse("/settings#connection", status_code=303)
     mode = "full" if mode == "full" else "sample"
     try:
         sample_size = max(1, min(int(sample_size), 10000))
@@ -293,7 +293,7 @@ def settings_thumbs(request: Request, limit: str = Form("500")):
     bucket = get_bucket_name()
     if not bucket:
         set_notice(request, "Set a B2 bucket first.")
-        return RedirectResponse("/settings", status_code=303)
+        return RedirectResponse("/settings#connection", status_code=303)
     try:
         n = int(limit)
     except (TypeError, ValueError):
@@ -308,23 +308,23 @@ def settings_thumbs(request: Request, limit: str = Form("500")):
 def settings_backup_refresh(request: Request):
     if not get_bucket_name():
         set_notice(request, "Set a B2 bucket first.")
-        return RedirectResponse("/settings", status_code=303)
+        return RedirectResponse("/settings#connection", status_code=303)
     try:
         refresh_remote_status()
         set_notice(request, "Checked B2 for the catalog backup.")
     except Exception as e:
         set_notice(request, f"Could not check B2: {e}")
-    return RedirectResponse("/settings", status_code=303)
+    return RedirectResponse("/settings#backup", status_code=303)
 
 
 @router.post("/settings/backup/sync-to")
 def settings_backup_sync_to(request: Request, confirm: str = Form("")):
     if not get_bucket_name():
         set_notice(request, "Set a B2 bucket first.")
-        return RedirectResponse("/settings", status_code=303)
+        return RedirectResponse("/settings#connection", status_code=303)
     if confirm != "1":
         set_notice(request, "Confirm that you want to replace the B2 catalog backup.")
-        return RedirectResponse("/settings", status_code=303)
+        return RedirectResponse("/settings#backup", status_code=303)
     job_id = enqueue("db_backup", {"bucket": get_bucket_name()})
     set_notice(request, f"Catalog backup job #{job_id} queued.")
     return RedirectResponse(f"/jobs/{job_id}", status_code=303)
@@ -334,10 +334,10 @@ def settings_backup_sync_to(request: Request, confirm: str = Form("")):
 def settings_backup_sync_from(request: Request, confirm: str = Form("")):
     if not get_bucket_name():
         set_notice(request, "Set a B2 bucket first.")
-        return RedirectResponse("/settings", status_code=303)
+        return RedirectResponse("/settings#connection", status_code=303)
     if (confirm or "").strip().lower() != SYNC_FROM_PHRASE:
         set_notice(request, f'Type "{SYNC_FROM_PHRASE}" to replace the local catalog from B2.')
-        return RedirectResponse("/settings", status_code=303)
+        return RedirectResponse("/settings#backup", status_code=303)
     job_id = enqueue("db_restore", {"bucket": get_bucket_name()})
     set_notice(request, f"Catalog restore job #{job_id} queued.")
     return RedirectResponse(f"/jobs/{job_id}", status_code=303)
@@ -355,15 +355,15 @@ def settings_delete_drive(
     confirm_name = confirm_name.strip()
     if not drive_name:
         set_notice(request, "Choose a drive to remove.")
-        return RedirectResponse("/settings", status_code=303)
+        return RedirectResponse("/settings#danger", status_code=303)
     if confirm_name != drive_name:
         set_notice(request, "Drive name did not match. Nothing was deleted.")
-        return RedirectResponse("/settings", status_code=303)
+        return RedirectResponse("/settings#danger", status_code=303)
     from_b2 = bool(delete_from_b2)
     is_dry = bool(dry_run)
     if from_b2 and not get_bucket_name():
         set_notice(request, "Set a B2 bucket before deleting objects there.")
-        return RedirectResponse("/settings", status_code=303)
+        return RedirectResponse("/settings#connection", status_code=303)
     job_id = enqueue(
         "delete_drive",
         {

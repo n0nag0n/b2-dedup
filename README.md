@@ -2,7 +2,7 @@
 
 A home-network vault for old drives backed up to Backblaze B2. Files are hashed (SHA-256) and only uploaded once; duplicates become lightweight `.b2ptr` pointer files. A local SQLite catalog makes the archive searchable. Dedup is the plumbing — the product is finding what you already have.
 
-The CLI still handles unattended ingest and restore. `python b2_dedup.py serve` opens the StorageInsights web UI (FastAPI + HTML). Ingest is a background job (`/ingest`); `/scratch` accepts browser uploads and feeds them through the same ingest job. Search, browse, library/timeline, and restore-to-folder are in the same app. The previous Streamlit UI is `serve --legacy`.
+The CLI still handles unattended ingest and restore. `python b2_dedup.py serve` opens the StorageInsights web UI (FastAPI + HTML). Ingest is a background job (`/ingest`); `/scratch` accepts browser uploads and feeds them through the same ingest job. Search covers name queries, walking one drive, and moments. Restore-to-folder is in the same app. The previous Streamlit UI is `serve --legacy`.
 
 ## Purpose
 
@@ -204,6 +204,24 @@ python b2_dedup.py serve [--port PORT]
 ```
 
 Opens StorageInsights at `http://localhost:8501` (or the given port). Home shows every drive, catalog totals, catalog-backup health, and the last B2 verify. Search is global. **Ingest** (`/ingest`) lists plugged-in disks, previews junk skips and already-tracked files, then starts a job. **Scratch** (`/scratch`) accepts files or folders dragged into the browser and ingests them as the `Scratch` drive, reusing the same dedup and junk rules; staged copies live in `data/scratch/` and are removed after a successful ingest. **Settings** (`/settings`) holds the bucket, restore destination, extra ingest folders, Scratch drive name, catalog backup/restore, and the verify job. Job logs live at `/jobs`.
+
+### Scratch uploads and the request size limit
+
+Scratch copies each file to the computer running StorageInsights over HTTP, then ingests that copy. The web server in front of the app often rejects a large body before StorageInsights sees it. Nginx’s default is 1 MB. The failure shows up in the browser as **413**, and a video folder dies on the first file that crosses the limit.
+
+Run the proxy at **256 MB** per request. That is large enough for a normal video and small enough that one request cannot be many gigabytes. Scratch sends a file in one request until it is larger than **248 MB**. Anything bigger is split into 248 MB pieces (`POST /scratch/chunk`). The 8 MB gap is the multipart wrapper, so a piece still fits inside the 256 MB cap. A half-finished file is kept out of the batch until its last piece arrives. If one file fails, the rest of the folder keeps uploading.
+
+Nginx, on the StorageInsights site only:
+
+```nginx
+client_max_body_size 256m;
+proxy_read_timeout 180s;
+proxy_send_timeout 180s;
+```
+
+Caddy, inside the site block: `request_body max_size 256MB`. Apache: `LimitRequestBody 268435456`.
+
+If the proxy allows less than 248 MB, the browser retries that file in smaller pieces, down to 256 KB. A piece that still will not go through is skipped, and the folder continues. Raising the proxy past 256 MB does not help. Larger files are already split. A short proxy read timeout can cut off a large piece the same way a small body limit does. 180 seconds is enough on a home network.
 
 Downloading does not need a restore folder or a local copy of the vault:
 

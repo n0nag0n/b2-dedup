@@ -12,7 +12,13 @@
     const prefixInput = document.getElementById("scratch-prefix");
     const progress = document.getElementById("scratch-progress");
     const status = document.getElementById("scratch-status");
+    const actions = document.getElementById("scratch-actions");
+    const usage = document.getElementById("scratch-usage");
     const log = document.getElementById("scratch-log");
+
+    // 248 MB stays under the 256 MB proxy body limit, including the multipart wrapper.
+    const CHUNK_BYTES = 248 * 1024 * 1024;
+    const MIN_CHUNK_BYTES = 256 * 1024;
 
     const junkDirs = new Set(JSON.parse(drop.dataset.junkDirs || "[]"));
     const junkFiles = new Set(JSON.parse(drop.dataset.junkFiles || "[]"));
@@ -23,10 +29,17 @@
         totalBytes: 0,
         doneBytes: 0,
         activeLoaded: 0,
-        expected: 0,
         finished: 0,
         staged: 0,
+        stagedBytes: 0,
+        failed: [],
+        batchId: "",
         uploading: false,
+        finishing: false,
+        stopped: false,
+        chunkSize: CHUNK_BYTES,
+        currentName: "",
+        currentDetail: "",
     };
 
     function setStatus(text, isError) {
@@ -92,8 +105,57 @@
             progress.value = pct;
             progress.textContent = `${pct}%`;
         }
-        if (state.uploading) {
-            setStatus(`Uploading ${state.finished} of ${state.expected} files…`);
+        if (!state.uploading) return;
+        const total = state.finished + (state.currentName ? 1 : 0) + state.queue.length;
+        const current = Math.min(total, state.finished + (state.currentName ? 1 : 0));
+        let text = `Uploading ${current} of ${total} files`;
+        if (state.currentName) text += ` · ${state.currentName}`;
+        if (state.currentDetail) text += state.currentDetail;
+        setStatus(text);
+    }
+
+    function clearActions() {
+        if (!actions) return;
+        actions.hidden = true;
+        actions.replaceChildren();
+    }
+
+    function showActions(buttons) {
+        if (!actions) return;
+        actions.replaceChildren();
+        buttons.forEach((spec) => {
+            const button = document.createElement("button");
+            button.type = "button";
+            button.textContent = spec.label;
+            if (spec.secondary) button.className = "secondary";
+            button.addEventListener("click", spec.onClick);
+            actions.appendChild(button);
+        });
+        actions.hidden = buttons.length === 0;
+    }
+
+    function applyUsage(data) {
+        if (!usage || !data) return;
+        const batches = Number(data.batches) || 0;
+        const files = Number(data.files) || 0;
+        let text = `${batches} staged ${batches === 1 ? "batch" : "batches"} · ${files.toLocaleString()} files · ${data.bytes_fmt || "0 B"}`;
+        if (data.free_fmt) text += ` · ${data.free_fmt} free on that disk`;
+        text += " · staging folder ";
+        usage.textContent = text;
+        const code = document.createElement("code");
+        code.className = "wrap";
+        code.textContent = data.path || "";
+        usage.appendChild(code);
+    }
+
+    async function refreshUsage() {
+        if (!usage) return;
+        try {
+            const response = await fetch("/scratch/usage", { headers: { Accept: "application/json" } });
+            if (!response.ok) return;
+            applyUsage(await response.json());
+        } catch (err) {
+            // The status line already describes this upload.
         }
     }
 
@@ -108,13 +170,13 @@
                 continue;
             }
             state.seen.add(rel);
+            state.failed = state.failed.filter((item) => item.path !== rel);
             if (isJunkPath(rel)) {
                 junk += 1;
                 logLine(`skipped junk: ${rel}`);
                 continue;
             }
             state.queue.push({ file: item.file, path: rel });
-            state.expected += 1;
             state.totalBytes += item.file.size || 0;
             added += 1;
         }
@@ -169,26 +231,28 @@
         if (removeName) removeName.value = name;
     }
 
-    function uploadOne(file, relPath, batchId) {
-        return new Promise((resolve, reject) => {
-            const body = new FormData();
-            body.append("batch", batchId);
-            body.append("path", relPath);
-            body.append("prefix", prefixInput ? prefixInput.value : "");
-            body.append("modified", file.lastModified ? String(file.lastModified) : "");
-            body.append("file", file, file.name);
+    function sleep(ms) {
+        return new Promise((resolve) => setTimeout(resolve, ms));
+    }
 
+    function plainFailure(status, file) {
+        const size = formatBytes(file && file.size);
+        if (status === 413) return `the server refused ${size} in one request`;
+        if (!status) return "the connection dropped";
+        return `upload failed (${status})`;
+    }
+
+    function postForm(url, body, file, onProgress) {
+        return new Promise((resolve, reject) => {
             const xhr = new XMLHttpRequest();
-            xhr.open("POST", "/scratch/upload");
+            xhr.open("POST", url);
             xhr.setRequestHeader("Accept", "application/json");
-            xhr.upload.addEventListener("progress", (event) => {
-                if (event.lengthComputable) {
-                    state.activeLoaded = event.loaded;
-                    renderProgress();
-                }
-            });
+            if (onProgress) {
+                xhr.upload.addEventListener("progress", (event) => {
+                    if (event.lengthComputable) onProgress(event.loaded);
+                });
+            }
             xhr.addEventListener("load", () => {
-                state.activeLoaded = 0;
                 let data = {};
                 try {
                     data = JSON.parse(xhr.responseText);
@@ -197,23 +261,206 @@
                 }
                 if (xhr.status >= 200 && xhr.status < 300 && data.ok) {
                     resolve(data);
-                } else {
-                    reject(new Error(data.error || `Upload failed (${xhr.status}).`));
+                    return;
                 }
+                const error = new Error(data.error || plainFailure(xhr.status, file));
+                error.status = xhr.status;
+                error.fatal = xhr.status === 507 && data.fatal !== false;
+                if (typeof data.received === "number") error.received = data.received;
+                reject(error);
             });
             xhr.addEventListener("error", () => {
-                state.activeLoaded = 0;
-                reject(new Error("Network error while uploading."));
+                reject(Object.assign(new Error("the connection dropped"), { status: 0 }));
             });
             xhr.send(body);
         });
     }
 
+    async function withTransientRetry(file, send) {
+        let last;
+        for (let attempt = 0; attempt < 3; attempt += 1) {
+            try {
+                return await send();
+            } catch (err) {
+                last = err;
+                if (err.fatal || err.status === 400 || err.status === 409 || err.status === 413 || err.status === 507) {
+                    throw err;
+                }
+                await sleep(400 * (attempt + 1));
+            }
+        }
+        throw last;
+    }
+
+    function uploadFields(body, file, relPath) {
+        body.append("path", relPath);
+        body.append("prefix", prefixInput ? prefixInput.value : "");
+        body.append("modified", file.lastModified ? String(file.lastModified) : "");
+    }
+
+    function uploadWhole(file, relPath, batchId) {
+        const body = new FormData();
+        body.append("batch", batchId);
+        uploadFields(body, file, relPath);
+        body.append("file", file, file.name);
+        return postForm("/scratch/upload", body, file, (loaded) => {
+            state.activeLoaded = Math.min(loaded, file.size || loaded);
+            renderProgress();
+        });
+    }
+
+    async function uploadChunked(file, relPath, batchId) {
+        let offset = 0;
+        const total = file.size || 0;
+        let stuck = 0;
+        while (true) {
+            const length = total === 0 ? 0 : Math.min(state.chunkSize, total - offset);
+            const blob = file.slice(offset, total === 0 ? 0 : offset + length);
+            const body = new FormData();
+            body.append("batch", batchId);
+            uploadFields(body, file, relPath);
+            body.append("offset", String(offset));
+            body.append("total", String(total));
+            body.append("file", blob, file.name);
+            let data;
+            try {
+                data = await withTransientRetry(file, () => postForm(
+                    "/scratch/chunk",
+                    body,
+                    file,
+                    (loaded) => {
+                        const sent = Math.min(total, offset + loaded);
+                        state.activeLoaded = sent;
+                        state.currentDetail = total
+                            ? ` · ${formatBytes(sent)} of ${formatBytes(total)}`
+                            : "";
+                        renderProgress();
+                    },
+                ));
+            } catch (err) {
+                if (err.status === 409 && typeof err.received === "number" && err.received !== offset) {
+                    offset = err.received;
+                    stuck = 0;
+                    continue;
+                }
+                if (err.status === 413) {
+                    const next = Math.floor(Math.min(state.chunkSize, length || state.chunkSize) / 2);
+                    if (next >= MIN_CHUNK_BYTES) {
+                        state.chunkSize = next;
+                        logLine(`Sending ${relPath} in ${formatBytes(state.chunkSize)} pieces.`);
+                        continue;
+                    }
+                    err.message = `the server refused a ${formatBytes(length)} piece of this ${formatBytes(total)} file`;
+                }
+                throw err;
+            }
+            if (data.skipped || data.complete) return data;
+            const next = typeof data.received === "number" ? data.received : offset + length;
+            if (next <= offset) {
+                stuck += 1;
+                if (stuck > 2) {
+                    throw new Error("the server did not keep the last piece of this file");
+                }
+                continue;
+            }
+            stuck = 0;
+            offset = next;
+            state.activeLoaded = Math.min(total, offset);
+            state.currentDetail = total ? ` · ${formatBytes(offset)} of ${formatBytes(total)}` : "";
+            renderProgress();
+        }
+    }
+
+    async function uploadOne(file, relPath, batchId) {
+        if ((file.size || 0) > state.chunkSize) {
+            return uploadChunked(file, relPath, batchId);
+        }
+        try {
+            return await withTransientRetry(file, () => uploadWhole(file, relPath, batchId));
+        } catch (err) {
+            if (err.status !== 413) throw err;
+            const next = Math.floor((file.size || 0) / 2);
+            if (next < MIN_CHUNK_BYTES) {
+                err.message = `the server refused this ${formatBytes(file.size)} file`;
+                throw err;
+            }
+            state.chunkSize = next;
+            logLine(`${relPath} was refused in one request. Sending ${formatBytes(state.chunkSize)} pieces instead.`);
+            return uploadChunked(file, relPath, batchId);
+        }
+    }
+
+    function showResumeActions() {
+        const buttons = [];
+        if (state.staged) {
+            const noun = state.staged === 1 ? "file" : "files";
+            buttons.push({
+                label: `Ingest ${state.staged} staged ${noun}`,
+                onClick: () => finish(state.batchId),
+            });
+        }
+        const remaining = state.failed.length + state.queue.length;
+        if (remaining) {
+            buttons.push({
+                label: remaining === 1 ? "Retry 1 file" : `Retry ${remaining} files`,
+                secondary: Boolean(state.staged),
+                onClick: () => {
+                    requeueFailed();
+                    startQueue();
+                },
+            });
+        }
+        showActions(buttons);
+    }
+
+    function presentOutcome() {
+        const failed = state.failed.length;
+        const waiting = state.queue.length;
+        const parts = [];
+        if (state.staged) {
+            const noun = state.staged === 1 ? "file" : "files";
+            parts.push(`Staged ${state.staged} ${noun} (${formatBytes(state.stagedBytes)})`);
+        } else {
+            parts.push("Nothing was staged");
+        }
+        if (failed) parts.push(`${failed} ${failed === 1 ? "file" : "files"} could not be uploaded`);
+        if (waiting) parts.push(`${waiting} ${waiting === 1 ? "file" : "files"} not sent yet`);
+        let text = `${parts.join(". ")}.`;
+        if (state.stopped && failed) text = `${state.failed[failed - 1].message} ${text}`;
+        setStatus(text, failed > 0 || state.stopped);
+        if (progress && !waiting) {
+            progress.value = 100;
+            progress.textContent = "100%";
+        }
+        showResumeActions();
+        refreshUsage();
+    }
+
+    function requeueFailed() {
+        const queued = new Set(state.queue.map((item) => item.path));
+        state.failed.forEach((item) => {
+            state.doneBytes -= item.file.size || 0;
+            state.finished -= 1;
+            if (!queued.has(item.path)) {
+                state.queue.push({ file: item.file, path: item.path });
+                queued.add(item.path);
+            }
+            state.seen.add(item.path);
+        });
+        if (state.doneBytes < 0) state.doneBytes = 0;
+        if (state.finished < 0) state.finished = 0;
+        state.failed = [];
+        state.stopped = false;
+    }
+
     async function finish(batchId) {
+        if (state.finishing || state.uploading) return;
+        state.finishing = true;
+        clearActions();
         const body = new URLSearchParams();
         body.set("batch", batchId);
         body.set("drive_name", selectedDrive());
-        setStatus("Upload complete. Starting the ingest job…");
+        setStatus("Starting the ingest job…");
         try {
             const response = await fetch("/scratch/finish", {
                 method: "POST",
@@ -231,69 +478,84 @@
                 return;
             }
             setStatus(data.error || "The upload is staged, but the ingest job did not start.", true);
-            logLine("The staged files are kept on the Scratch page for a retry.");
+            logLine("The staged files are kept on this page. You can start the ingest again.");
+            showResumeActions();
         } catch (err) {
             setStatus("The upload is staged, but the ingest job did not start.", true);
             logLine(`Could not start ingest: ${err.message || err}`);
+            showResumeActions();
+        } finally {
+            state.finishing = false;
         }
     }
 
     async function startQueue() {
         if (state.uploading) return;
+        if (!state.queue.length) {
+            if (state.failed.length) presentOutcome();
+            return;
+        }
         state.uploading = true;
-        state.doneBytes = 0;
-        state.activeLoaded = 0;
-        state.finished = 0;
-        state.staged = 0;
-        state.expected = state.queue.length;
-        state.totalBytes = state.queue.reduce(
-            (sum, item) => sum + (item.file.size || 0),
-            0,
-        );
-        const batchId = newBatchId();
+        state.stopped = false;
+        clearActions();
+        if (!state.batchId) state.batchId = newBatchId();
         setStatus("Preparing upload…");
         renderProgress();
 
-        let failed = false;
+        let fatal = false;
         while (state.queue.length) {
             const item = state.queue.shift();
+            state.currentName = item.path;
+            state.currentDetail = "";
+            state.activeLoaded = 0;
+            state.failed = state.failed.filter((failed) => failed.path !== item.path);
+            renderProgress();
             try {
-                const result = await uploadOne(item.file, item.path, batchId);
+                const result = await uploadOne(item.file, item.path, state.batchId);
                 state.doneBytes += item.file.size || 0;
                 state.finished += 1;
                 if (result.skipped) {
                     logLine(`skipped junk: ${result.path || item.path}`);
                 } else {
                     state.staged += 1;
+                    state.stagedBytes += result.bytes || item.file.size || 0;
                     logLine(`staged ${result.path || item.path} (${formatBytes(result.bytes)})`);
+                    if (state.staged === 1) refreshUsage();
                 }
             } catch (err) {
-                failed = true;
-                state.finished += 1;
                 state.doneBytes += item.file.size || 0;
-                logLine(`failed ${item.path}: ${err.message || err}`);
-                setStatus(
-                    `Upload stopped: ${err.message || err} Anything already staged is kept.`,
-                    true,
-                );
-                // Forget the unattempted paths so dropping them again retries
-                // cleanly instead of being treated as duplicates.
+                state.finished += 1;
                 state.seen.delete(item.path);
-                for (const pending of state.queue) state.seen.delete(pending.path);
-                state.queue = [];
-                break;
+                state.failed.push({
+                    file: item.file,
+                    path: item.path,
+                    message: err.message || String(err),
+                });
+                logLine(`failed ${item.path} (${formatBytes(item.file.size)}): ${err.message || err}`);
+                if (err.fatal) {
+                    fatal = true;
+                    state.stopped = true;
+                    break;
+                }
+            } finally {
+                state.currentName = "";
+                state.currentDetail = "";
+                state.activeLoaded = 0;
             }
             renderProgress();
         }
 
         state.uploading = false;
-        state.activeLoaded = 0;
-        if (failed) return;
-        if (state.staged === 0) {
-            setStatus("Nothing to ingest — every file was a junk path.");
+        if (fatal || state.failed.length) {
+            presentOutcome();
             return;
         }
-        await finish(batchId);
+        if (state.staged === 0) {
+            setStatus("Nothing to ingest. Every file was a junk path.");
+            refreshUsage();
+            return;
+        }
+        await finish(state.batchId);
     }
 
     syncDriveFields();

@@ -1,4 +1,4 @@
-"""Catalog queries for Home, Search, Browse, Inspector, and restore."""
+"""Catalog queries for Home, Search, the file inspector, and restore."""
 from __future__ import annotations
 
 import re
@@ -321,6 +321,67 @@ def _also_label(count: int, noun: str) -> str:
     return f"Also in {count:,} other {word}"
 
 
+def _month_value(value: str) -> str:
+    text = str(value or "").strip()
+    if not text.isdigit():
+        return ""
+    number = int(text)
+    if 1 <= number <= 12:
+        return f"{number:02d}"
+    return ""
+
+
+def _narrow_conditions(
+    *,
+    file_type: str = "",
+    origin: str = "",
+    ext: str = "",
+    year: str = "",
+    month: str = "",
+) -> tuple[list[str], list]:
+    """Shared file filters for a name search and a folder listing."""
+    conditions: list[str] = []
+    params: list = []
+    if file_type:
+        conditions.append("f.file_type = ?")
+        params.append(file_type)
+    if origin == "original":
+        conditions.append("f.is_original = 1")
+    elif origin == "copy":
+        conditions.append("f.is_original = 0")
+    exts = [piece.strip().lower().lstrip(".") for piece in (ext or "").split(",") if piece.strip()]
+    if exts:
+        conditions.append("(" + " OR ".join("f.file_path LIKE ?" for _ in exts) + ")")
+        params.extend(f"%.{ext_name}" for ext_name in exts)
+    year_text = str(year or "")
+    if year_text.isdigit() and len(year_text) == 4:
+        conditions.append("substr(f.best_taken_at, 1, 4) = ?")
+        params.append(year_text)
+    month_text = _month_value(month)
+    if month_text:
+        conditions.append("substr(f.best_taken_at, 6, 2) = ?")
+        params.append(month_text)
+    return conditions, params
+
+
+def _path_prefix_condition(path: str) -> tuple[str, list]:
+    prefix = (path or "").replace("\\", "/").strip("/")
+    if not prefix:
+        return "", []
+    return "(f.file_path = ? OR f.file_path LIKE ?)", [prefix, f"{prefix}/%"]
+
+
+_FOLDER_ORDERS = {
+    "path": "f.file_path ASC",
+    "taken_desc": "f.best_taken_at DESC, f.file_path ASC",
+    "taken_asc": "f.best_taken_at ASC, f.file_path ASC",
+    "mtime_desc": "f.file_mtime DESC, f.file_path ASC",
+    "mtime_asc": "f.file_mtime ASC, f.file_path ASC",
+    "size_desc": "f.size DESC, f.file_path ASC",
+    "size_asc": "f.size ASC, f.file_path ASC",
+}
+
+
 def _empty_search(per_page: int, folder_per_page: int) -> dict:
     return {
         "total": 0,
@@ -554,10 +615,12 @@ def search_files(
     q: str,
     *,
     drive: str = "",
+    path: str = "",
     file_type: str = "",
     origin: str = "",
     ext: str = "",
     year: str = "",
+    month: str = "",
     hide_hidden: bool = True,
     sort: str = "path",
     page: int = 1,
@@ -567,11 +630,11 @@ def search_files(
 ) -> dict:
     """Search file names and folder names across every drive.
 
-    Drive is an optional filter, never required. A file matches when its
-    own name matches. A folder matches when that directory's name matches,
-    so searching for a folder does not list every file inside it. Bytes
-    that were backed up more than once come back as one file, and the
-    other paths are attached to that row.
+    Drive and folder path are optional filters, never required. A file
+    matches when its own name matches. A folder matches when that
+    directory's name matches, so searching for a folder does not list
+    every file inside it. Bytes that were backed up more than once come
+    back as one file, and the other paths are attached to that row.
     """
     q = (q or "").strip()
     fts = fts_query(q) if q else ""
@@ -586,21 +649,15 @@ def search_files(
     if drive:
         conditions.append("f.drive_name = ?")
         params.append(drive)
-    if file_type:
-        conditions.append("f.file_type = ?")
-        params.append(file_type)
-    if origin == "original":
-        conditions.append("f.is_original = 1")
-    elif origin == "copy":
-        conditions.append("f.is_original = 0")
-    if ext:
-        exts = [piece.strip().lower().lstrip(".") for piece in ext.split(",") if piece.strip()]
-        if exts:
-            conditions.append("(" + " OR ".join("f.file_path LIKE ?" for _ in exts) + ")")
-            params.extend(f"%.{ext_name}" for ext_name in exts)
-    if year and str(year).isdigit() and len(str(year)) == 4:
-        conditions.append("substr(f.best_taken_at, 1, 4) = ?")
-        params.append(str(year))
+    path_sql, path_params = _path_prefix_condition(path)
+    if path_sql:
+        conditions.append(path_sql)
+        params.extend(path_params)
+    narrow_sql, narrow_params = _narrow_conditions(
+        file_type=file_type, origin=origin, ext=ext, year=year, month=month
+    )
+    conditions.extend(narrow_sql)
+    params.extend(narrow_params)
 
     where = " WHERE " + " AND ".join(conditions)
     select_sql = (
@@ -721,6 +778,12 @@ def list_folder_files(
     prefix: str,
     *,
     hide_hidden: bool = True,
+    file_type: str = "",
+    origin: str = "",
+    ext: str = "",
+    year: str = "",
+    month: str = "",
+    sort: str = "path",
     page: int = 1,
     per_page: int = ROWS_PER_PAGE,
 ) -> dict:
@@ -731,27 +794,33 @@ def list_folder_files(
     params: list = [drive, f"{prefix}%", f"{prefix}%/%"]
     if hide_hidden:
         conditions.append("f.searchable = 1")
+    narrow_sql, narrow_params = _narrow_conditions(
+        file_type=file_type, origin=origin, ext=ext, year=year, month=month
+    )
+    conditions.extend(narrow_sql)
+    params.extend(narrow_params)
     where = " WHERE " + " AND ".join(conditions)
+    order = _FOLDER_ORDERS.get(sort, _FOLDER_ORDERS["path"])
 
     conn = connect(readonly=True)
     try:
         total = conn.execute(f"SELECT COUNT(*) FROM files f{where}", params).fetchone()[0]
         offset = (page - 1) * per_page
         rows = conn.execute(
-            "SELECT f.id, f.drive_name, f.file_path, f.size, f.is_original, "
+            "SELECT f.id, f.hash, f.drive_name, f.file_path, f.size, f.is_original, "
             "f.file_type, f.mime_type, f.file_mtime, f.created_at, "
             "f.best_taken_at, f.taken_at_source "
-            f"FROM files f{where} ORDER BY f.file_path LIMIT ? OFFSET ?",
+            f"FROM files f{where} ORDER BY {order} LIMIT ? OFFSET ?",
             [*params, per_page, offset],
         ).fetchall()
+        files = []
+        for r in rows:
+            item = _file_row(r)
+            item["name"] = item["file_path"][len(prefix):]
+            files.append(item)
+        _attach_places(conn, files, hide_hidden=hide_hidden)
     finally:
         conn.close()
-
-    files = []
-    for r in rows:
-        item = _file_row(r)
-        item["name"] = item["file_path"][len(prefix):]
-        files.append(item)
 
     pages = max(1, (total + per_page - 1) // per_page) if total else 1
     return {

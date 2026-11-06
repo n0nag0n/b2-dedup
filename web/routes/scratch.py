@@ -27,6 +27,7 @@ from core.config import (
 from core.jobs import enqueue
 from core.junk import INGEST_SKIP_DIR_NAMES, INGEST_SKIP_FILE_NAMES
 from core.scratch import (
+    ScratchConflict,
     ScratchDiskFull,
     ScratchError,
     batch_dir,
@@ -42,6 +43,7 @@ from core.scratch import (
     resolve_browse_dir,
     save_upload,
     scratch_usage,
+    write_chunk,
     staging_is_ready,
     staging_root,
     validate_staging_dir,
@@ -173,7 +175,62 @@ def scratch_upload(
     try:
         result = save_upload(file.file, batch, rel, modified)
     except ScratchDiskFull as exc:
-        return JSONResponse({"ok": False, "error": str(exc)}, status_code=507)
+        return JSONResponse(
+            {"ok": False, "error": str(exc), "fatal": exc.fatal},
+            status_code=507,
+        )
+    except ScratchError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+    except OSError as exc:
+        return JSONResponse(
+            {"ok": False, "error": f"Could not save that file: {exc}"},
+            status_code=500,
+        )
+
+    result["ok"] = True
+    return JSONResponse(result)
+
+
+@router.get("/scratch/usage")
+def scratch_usage_json():
+    return JSONResponse(scratch_usage())
+
+
+@router.post("/scratch/chunk")
+def scratch_chunk(
+    file: UploadFile = File(...),
+    batch: str = Form(""),
+    path: str = Form(""),
+    prefix: str = Form(""),
+    modified: str = Form(""),
+    offset: str = Form("0"),
+    total: str = Form("0"),
+):
+    """Accept one piece of a file that is too large for a single request."""
+    if batch_dir(batch) is None:
+        return JSONResponse(
+            {"ok": False, "error": "That upload batch is not valid. Reload the page and try again."},
+            status_code=400,
+        )
+
+    rel = (path or file.filename or "").strip()
+    try:
+        rel = join_prefix(prefix, rel)
+    except ScratchError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+
+    try:
+        result = write_chunk(file.file, batch, rel, offset, total, modified)
+    except ScratchConflict as exc:
+        return JSONResponse(
+            {"ok": False, "error": str(exc), "received": exc.received},
+            status_code=409,
+        )
+    except ScratchDiskFull as exc:
+        return JSONResponse(
+            {"ok": False, "error": str(exc), "fatal": exc.fatal},
+            status_code=507,
+        )
     except ScratchError as exc:
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
     except OSError as exc:

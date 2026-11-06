@@ -1,4 +1,4 @@
-"""Date backfill, library grid, and timeline moments."""
+"""Date backfill and moment grouping."""
 from __future__ import annotations
 
 from pathlib import Path
@@ -16,10 +16,11 @@ from core.time import (
 
 LIBRARY_PAGE = 60
 MOMENT_PAGE = 80
-_MONTH_NAMES = (
+MONTH_NAMES = (
     "January", "February", "March", "April", "May", "June",
     "July", "August", "September", "October", "November", "December",
 )
+_MONTH_NAMES = MONTH_NAMES
 
 
 def _file_card(row, *, copies: int = 1) -> dict:
@@ -389,6 +390,8 @@ def list_moments(
     file_type: str = "",
     year: str = "",
     month: str = "",
+    drive: str = "",
+    q: str = "",
     hide_hidden: bool = True,
     limit: int = 80,
 ) -> list[dict]:
@@ -397,10 +400,12 @@ def list_moments(
         file_type=file_type,
         year=year,
         month=month,
+        drive=drive,
         hide_hidden=hide_hidden,
         originals_only=False,
         dated_only=True,
     )
+    needle = (q or "").strip().lower()
     # Cap the raw pull so a huge month still renders. Group in Python so
     # we can walk past DCIM / 140CANON / .picasaoriginals.
     conn = connect(readonly=True)
@@ -424,6 +429,8 @@ def list_moments(
             continue
         folder = moment_folder(path)
         title = moment_title(folder)
+        if needle and needle not in title.lower() and needle not in folder.lower():
+            continue
         taken = row["best_taken_at"] or ""
         # A month page is one card per titled folder; otherwise group by day.
         day = taken[:7] if month_bucket else taken[:10]

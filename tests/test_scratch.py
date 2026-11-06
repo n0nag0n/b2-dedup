@@ -118,6 +118,132 @@ def test_upload_endpoint_handles_multi_megabyte_file(tmp_path, monkeypatch):
     assert staged.stat().st_size == len(data)
 
 
+def test_write_chunk_assembles_outside_the_batch_until_complete(tmp_path, monkeypatch):
+    _isolate(tmp_path, monkeypatch)
+    batch = scratch.new_batch_id()
+    first = scratch.write_chunk(io.BytesIO(b"hello"), batch, "videos/a.mp4", 0, 11, "1700000000000")
+    assert first["complete"] is False
+    assert first["received"] == 5
+    staged = tmp_path / "scratch" / batch / "videos" / "a.mp4"
+    assert not staged.exists()
+    partials = list((tmp_path / "scratch" / ".incoming").rglob("*.part"))
+    assert len(partials) == 1
+    assert partials[0].read_bytes() == b"hello"
+
+    done = scratch.write_chunk(io.BytesIO(b" world"), batch, "videos/a.mp4", 5, 11, "1700000000000")
+    assert done["complete"] is True
+    assert done["bytes"] == 11
+    assert staged.read_bytes() == b"hello world"
+    assert abs(staged.stat().st_mtime - 1700000000) < 2
+    assert partials[0].exists() is False
+
+
+def test_write_chunk_rejects_a_gap_and_an_oversized_piece(tmp_path, monkeypatch):
+    _isolate(tmp_path, monkeypatch)
+    batch = scratch.new_batch_id()
+    scratch.write_chunk(io.BytesIO(b"hello"), batch, "a.bin", 0, 10)
+    with pytest.raises(scratch.ScratchConflict) as conflict:
+        scratch.write_chunk(io.BytesIO(b"x"), batch, "a.bin", 2, 10)
+    assert conflict.value.received == 5
+
+    monkeypatch.setattr(scratch, "MAX_CHUNK_BYTES", 4)
+    with pytest.raises(scratch.ScratchError):
+        scratch.write_chunk(io.BytesIO(b"12345"), batch, "b.bin", 0, 5)
+
+
+def test_write_chunk_skips_junk_and_leaves_a_file_that_does_not_fit(tmp_path, monkeypatch):
+    _isolate(tmp_path, monkeypatch)
+    batch = scratch.new_batch_id()
+    skipped = scratch.write_chunk(io.BytesIO(b"junk"), batch, "dir/node_modules/x.js", 0, 4)
+    assert skipped["skipped"] is True
+    assert not (tmp_path / "scratch" / ".incoming").exists()
+
+    monkeypatch.setattr(scratch, "_free_bytes", lambda _probe: scratch.MIN_FREE_BYTES + 8)
+    with pytest.raises(scratch.ScratchDiskFull) as too_big:
+        scratch.write_chunk(io.BytesIO(b"12345"), batch, "huge.bin", 0, 100)
+    assert too_big.value.fatal is False
+    assert "left out" in str(too_big.value)
+
+
+def test_chunk_endpoint_assembles_and_reports_conflicts(tmp_path, monkeypatch):
+    _isolate(tmp_path, monkeypatch)
+    batch = scratch.new_batch_id()
+    client = TestClient(app)
+    first = client.post(
+        "/scratch/chunk",
+        data={"batch": batch, "path": "clip.mp4", "offset": "0", "total": "5", "prefix": "Videos"},
+        files={"file": ("clip.mp4", b"hello", "application/octet-stream")},
+    )
+    assert first.status_code == 200
+    assert first.json()["complete"] is True
+    assert first.json()["path"] == "Videos/clip.mp4"
+    assert (tmp_path / "scratch" / batch / "Videos" / "clip.mp4").read_bytes() == b"hello"
+
+    empty = client.post(
+        "/scratch/chunk",
+        data={"batch": batch, "path": "empty.txt", "offset": "0", "total": "0"},
+        files={"file": ("empty.txt", b"", "text/plain")},
+    )
+    assert empty.status_code == 200
+    assert empty.json()["complete"] is True
+    assert (tmp_path / "scratch" / batch / "empty.txt").read_bytes() == b""
+
+    gap = client.post(
+        "/scratch/chunk",
+        data={"batch": batch, "path": "clip.mp4", "offset": "3", "total": "8"},
+        files={"file": ("clip.mp4", b"zz", "application/octet-stream")},
+    )
+    assert gap.status_code == 409
+    assert gap.json()["received"] == 0
+
+    blocked = client.post(
+        "/scratch/chunk",
+        data={"batch": batch, "path": "../etc/passwd", "offset": "0", "total": "4"},
+        files={"file": ("passwd", b"nope", "text/plain")},
+    )
+    assert blocked.status_code == 400
+
+    usage = client.get("/scratch/usage")
+    assert usage.status_code == 200
+    assert usage.json()["files"] == 2
+    assert usage.json()["batches"] == 1
+
+
+def test_chunk_endpoint_reports_a_file_that_does_not_fit(tmp_path, monkeypatch):
+    _isolate(tmp_path, monkeypatch)
+    monkeypatch.setattr("core.scratch._free_bytes", lambda _probe: scratch.MIN_FREE_BYTES + 8)
+    client = TestClient(app)
+    response = client.post(
+        "/scratch/chunk",
+        data={"batch": scratch.new_batch_id(), "path": "huge.bin", "offset": "0", "total": "100"},
+        files={"file": ("huge.bin", b"12345", "application/octet-stream")},
+    )
+    assert response.status_code == 507
+    body = response.json()
+    assert body["fatal"] is False
+    assert "left out" in body["error"]
+
+
+def test_stale_chunk_parts_expire(tmp_path, monkeypatch):
+    _isolate(tmp_path, monkeypatch)
+    root = tmp_path / "scratch"
+    batch = scratch.new_batch_id()
+    (root / batch).mkdir(parents=True)
+    incoming = root / ".incoming" / batch
+    incoming.mkdir(parents=True)
+    old = incoming / "abc.part"
+    recent = incoming / "new.part"
+    old.write_bytes(b"partial")
+    recent.write_bytes(b"keep")
+    ten_days_ago = time.time() - 10 * 86400
+    os.utime(old, (ten_days_ago, ten_days_ago))
+
+    assert scratch.cleanup_stale_batches(days=7) == 0
+    assert not old.exists()
+    assert recent.exists()
+    assert (root / batch).exists()
+
+
 def test_finish_enqueues_ingest_with_cleanup(tmp_path, monkeypatch):
     _isolate(tmp_path, monkeypatch)
     batch = scratch.new_batch_id()
@@ -281,6 +407,8 @@ def test_scratch_page_renders(tmp_path, monkeypatch):
     assert response.status_code == 200
     assert "Drop files or folders here" in response.text
     assert "scratch.js" in response.text
+    assert "sent in pieces" in response.text
+    assert "scratch-actions" in response.text
 
 
 def test_scratch_page_lists_staged_batches(tmp_path, monkeypatch):

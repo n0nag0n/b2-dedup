@@ -46,7 +46,7 @@ def download_file(request: Request, file_id: int):
     bucket = get_bucket_name()
     if not bucket:
         set_notice(request, "Set a B2 bucket in Settings before downloading.")
-        return RedirectResponse("/settings", status_code=303)
+        return RedirectResponse("/settings#connection", status_code=303)
 
     try:
         b2 = shared_manager(bucket)
@@ -102,7 +102,7 @@ def download_zip_stream(request: Request):
     bucket = get_bucket_name()
     if not bucket:
         set_notice(request, "Set a B2 bucket in Settings before downloading.")
-        return RedirectResponse("/settings", status_code=303)
+        return RedirectResponse("/settings#connection", status_code=303)
 
     try:
         b2 = shared_manager(bucket)
@@ -143,7 +143,7 @@ def prepare_zip(request: Request):
     bucket = get_bucket_name()
     if not bucket:
         set_notice(request, "Set a B2 bucket in Settings before downloading.")
-        return RedirectResponse("/settings", status_code=303)
+        return RedirectResponse("/settings#connection", status_code=303)
 
     free = free_disk_bytes()
     need = estimated_export_need(total_bytes)

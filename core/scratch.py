@@ -12,6 +12,8 @@ still be ingested or deleted.
 """
 from __future__ import annotations
 
+import fcntl
+import hashlib
 import json
 import os
 import re
@@ -28,6 +30,10 @@ from core.paths import SCRATCH_DIR
 
 MIN_FREE_BYTES = 1024 ** 3  # keep at least 1 GiB free on the staging disk
 COPY_CHUNK = 1024 * 1024
+# The reverse proxy in front of StorageInsights is expected to allow 256 MB
+# per request (nginx: `client_max_body_size 256m`). Pieces stay under that so
+# the multipart wrapper still fits. Larger files are assembled from pieces.
+MAX_CHUNK_BYTES = 248 * 1024 * 1024
 INCOMING_DIR_NAME = ".incoming"
 BATCH_RE = re.compile(r"^\d{8}-\d{6}-[0-9a-f]{8}$")
 MAX_REL_PATH = 1024
@@ -39,7 +45,26 @@ class ScratchError(ValueError):
 
 
 class ScratchDiskFull(ScratchError):
-    """Not enough free space to stage another upload."""
+    """Not enough free space to stage another upload.
+
+    ``fatal`` means the disk itself is too full to keep going. A single file
+    that does not fit is not fatal: the rest of the folder still can.
+    """
+
+    def __init__(self, message: str, *, fatal: bool = True):
+        super().__init__(message)
+        self.fatal = fatal
+
+
+class ScratchConflict(ScratchError):
+    """A piece arrived at a byte offset the partial file is not waiting for."""
+
+    def __init__(self, received: int):
+        super().__init__(
+            "That piece does not continue the file. "
+            "Send the next piece from the byte the server already has."
+        )
+        self.received = received
 
 
 def new_batch_id() -> str:
@@ -346,6 +371,140 @@ def save_upload(
     return {"path": rel, "bytes": written, "skipped": False}
 
 
+def _parse_byte_count(value, label: str) -> int:
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        raise ScratchError(f"That upload {label} is not valid.") from None
+    if number < 0:
+        raise ScratchError(f"That upload {label} is not valid.")
+    return number
+
+
+def _free_bytes(probe: Path) -> int:
+    current = probe
+    if not current.exists():
+        current = current.parent
+    return shutil.disk_usage(current).free
+
+
+def _partial_path(batch_id: str, rel: str) -> Path:
+    digest = hashlib.sha256(rel.encode("utf-8")).hexdigest()
+    return _incoming_dir() / batch_id / f"{digest}.part"
+
+
+def discard_partials(batch_id: str) -> None:
+    """Remove unfinished pieces for one batch. Finished files are left alone."""
+    text = (batch_id or "").strip()
+    if not BATCH_RE.fullmatch(text):
+        return
+    for root in scratch_roots():
+        incoming = root / INCOMING_DIR_NAME / text
+        if incoming.is_dir():
+            shutil.rmtree(incoming, ignore_errors=True)
+
+
+def write_chunk(
+    stream: BinaryIO,
+    batch_id: str,
+    rel_path: str | Path,
+    offset,
+    total,
+    last_modified_ms: str | int | None = None,
+) -> dict:
+    """Append one piece of a large upload, then publish the file when complete.
+
+    Pieces live under ``.incoming`` until the last byte arrives, so a half
+    finished video is never ingested. The piece must continue exactly where
+    the previous piece stopped.
+    """
+    rel = sanitize_rel_path(rel_path)
+    if is_ingest_skip(rel):
+        return {
+            "path": rel,
+            "bytes": 0,
+            "received": 0,
+            "skipped": True,
+            "complete": True,
+        }
+
+    batch = batch_dir(batch_id)
+    if batch is None:
+        raise ScratchError("That upload batch is not valid. Reload the page and try again.")
+
+    offset = _parse_byte_count(offset, "offset")
+    total = _parse_byte_count(total, "size")
+    if offset > total:
+        raise ScratchError("That upload piece does not line up with the file.")
+
+    payload = stream.read(MAX_CHUNK_BYTES + 1)
+    if not payload:
+        payload = b""
+    if len(payload) > MAX_CHUNK_BYTES:
+        raise ScratchError("That piece is too large. Send a smaller piece and try again.")
+    if offset + len(payload) > total:
+        raise ScratchError("That piece runs past the end of the file.")
+    if not payload and offset != total:
+        raise ScratchError("That piece was empty.")
+
+    free = _free_bytes(staging_root())
+    if free <= MIN_FREE_BYTES:
+        raise ScratchDiskFull(
+            "The staging disk is nearly full. Free some space, then try the upload again."
+        )
+    budget = free - MIN_FREE_BYTES
+    if offset == 0 and total > budget:
+        raise ScratchDiskFull(
+            f"This file is {format_size(total)} and only {format_size(budget)} "
+            "can be used on the staging disk, so it was left out.",
+            fatal=False,
+        )
+    if len(payload) > budget:
+        raise ScratchDiskFull(
+            "That upload would leave less than 1 GiB free on the staging disk."
+        )
+
+    part = _partial_path(batch_id, rel)
+    part.parent.mkdir(parents=True, exist_ok=True)
+    part.touch(exist_ok=True)
+    with open(part, "r+b") as handle:
+        fcntl.flock(handle, fcntl.LOCK_EX)
+        if offset == 0:
+            handle.seek(0)
+            handle.truncate(0)
+        else:
+            handle.seek(0, os.SEEK_END)
+            current = handle.tell()
+            if current != offset:
+                raise ScratchConflict(current)
+        handle.seek(offset)
+        handle.write(payload)
+        handle.flush()
+        os.fsync(handle.fileno())
+        received = offset + len(payload)
+        if received != total:
+            return {
+                "path": rel,
+                "bytes": received,
+                "received": received,
+                "skipped": False,
+                "complete": False,
+            }
+        target = batch.joinpath(*PurePosixPath(rel).parts)
+        batch.mkdir(parents=True, exist_ok=True)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        os.replace(part, target)
+
+    _apply_client_mtime(target, last_modified_ms)
+    return {
+        "path": rel,
+        "bytes": received,
+        "received": received,
+        "skipped": False,
+        "complete": True,
+    }
+
+
 def _apply_client_mtime(target: Path, last_modified_ms) -> None:
     """Keep the browser's file date so incremental ingest and dates work."""
     try:
@@ -518,7 +677,10 @@ def cleanup_batch(batch_id: str, *, allow_active: bool = False) -> bool:
         shutil.rmtree(batch)
     except OSError:
         return False
-    return not batch.exists()
+    if batch.exists():
+        return False
+    discard_partials(batch.name)
+    return True
 
 
 def clear_batches() -> int:
@@ -551,11 +713,15 @@ def cleanup_after_ingest(source: str | Path) -> bool:
     source = Path(source)
     if not is_scratch_path(source):
         return False
+    batch_id = source.name
     try:
         shutil.rmtree(source)
     except OSError:
         return False
-    return not source.exists()
+    if source.exists():
+        return False
+    discard_partials(batch_id)
+    return True
 
 
 def cleanup_stale_batches(days: int | None = None) -> int:
@@ -585,15 +751,24 @@ def cleanup_stale_batches(days: int | None = None) -> int:
                 shutil.rmtree(entry, ignore_errors=True)
                 removed += 1
 
-        # Abandoned .part files never reached a batch; they are safe to remove
+        # Abandoned pieces never reached a batch; they are safe to remove
         # after a day even if a batch is still inside its retention window.
         incoming = root / INCOMING_DIR_NAME
         if not incoming.is_dir():
             continue
-        for part in incoming.glob("*.part"):
+        for part in incoming.rglob("*"):
+            if not part.is_file() or part.suffix not in {".part", ".lock"}:
+                continue
             try:
                 if part.stat().st_mtime < partial_cutoff:
                     part.unlink(missing_ok=True)
+            except OSError:
+                continue
+        for directory in sorted(incoming.rglob("*"), reverse=True):
+            if not directory.is_dir():
+                continue
+            try:
+                directory.rmdir()
             except OSError:
                 continue
     return removed

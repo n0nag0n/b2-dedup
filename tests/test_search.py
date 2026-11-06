@@ -114,3 +114,32 @@ def test_search_page_shows_filename_places_and_folders():
     assert ">Files</h2>" in text
     assert "Austin Dell Backup" in text or ">Backup</a>" in text
     assert "No files or folders match" not in text
+    assert 'href="/browse' not in text
+    assert "/search?drive=" in text
+
+
+def test_search_path_limits_hits_to_that_folder():
+    wide = search_files("dice", per_page=5)
+    assert wide["total"] >= 1
+    narrow = search_files("dice", path="this/folder/does/not/exist", per_page=5)
+    assert narrow["total"] == 0
+    assert narrow["folder_total"] == 0
+
+
+def test_search_drive_walk_matches_file_rows():
+    from fastapi.testclient import TestClient
+
+    from core.catalog import get_drive_names
+    from web.app import app
+
+    names = get_drive_names()
+    assert names
+    client = TestClient(app)
+    page = client.get("/search", params={"drive": names[0]})
+    assert page.status_code == 200
+    html = page.text
+    assert ">Files</h2>" in html
+    assert "· copy" not in html
+    assert 'href="/browse' not in html
+    assert 'aria-label="Download"' in html or "No files in this folder." in html
+    assert f"/search?drive={names[0]}" in html or "drive=" in html

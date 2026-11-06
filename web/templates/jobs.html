@@ -86,11 +86,11 @@
     <tbody>
         {% for j in jobs %}
         <tr>
-            <td><a href="/jobs/{{ j.id }}">#{{ j.id }}</a></td>
-            <td>{{ j.type }}</td>
-            <td>{{ j.status }}</td>
-            <td>{% if j.progress_total %}{{ j.progress_done }}/{{ j.progress_total }}{% else %}—{% endif %}</td>
-            <td class="muted">{{ j.started_at or j.created_at or "" }}</td>
+            <td class="cell-title"><a href="/jobs/{{ j.id }}">#{{ j.id }}</a></td>
+            <td><span class="cell-label">Type</span>{{ j.type }}</td>
+            <td><span class="cell-label">Status</span>{{ j.status }}</td>
+            <td><span class="cell-label">Progress</span>{% if j.progress_total %}{{ j.progress_done }}/{{ j.progress_total }}{% else %}—{% endif %}</td>
+            <td class="muted"><span class="cell-label">Started</span>{{ j.started_at or j.created_at or "" }}</td>
         </tr>
         {% endfor %}
     </tbody>

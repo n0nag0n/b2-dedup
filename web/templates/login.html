@@ -2,12 +2,20 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+    {% include "_theme_boot.html" %}
     <title>Sign in · StorageInsights</title>
     <link rel="stylesheet" href="/static/app.css">
+    <script defer src="/static/theme.js"></script>
 </head>
 <body>
     <main class="wrap narrow">
+        <p class="login-tools">
+            <button type="button" class="theme-toggle theme-toggle-page" id="theme-toggle" aria-pressed="false">
+                <span class="label-to-dark">Dark<span class="label-extra"> mode</span></span>
+                <span class="label-to-light">Light<span class="label-extra"> mode</span></span>
+            </button>
+        </p>
         <h1>StorageInsights</h1>
         <p class="lede">This vault is password-protected on the local network.</p>
         {% if error %}

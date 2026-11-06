@@ -2,7 +2,7 @@
 {% block title %}{{ file.name }} · StorageInsights{% endblock %}
 {% block content %}
 <p class="crumbs">
-    <a href="/browse?drive={{ file.drive_name | urlencode }}&amp;path={{ file.parent_path | urlencode }}">{{ file.drive_name }}/{{ file.parent_path }}</a>
+    <a href="/search?drive={{ file.drive_name | urlencode }}&amp;path={{ file.parent_path | urlencode }}">{{ file.drive_name }}/{{ file.parent_path }}</a>
 </p>
 <h1>{{ file.name }}</h1>
 
@@ -58,7 +58,7 @@
 {% endif %}
 
 <dl class="meta-list">
-    <div><dt>Drive</dt><dd><a href="/browse?drive={{ file.drive_name | urlencode }}">{{ file.drive_name }}</a></dd></div>
+    <div><dt>Drive</dt><dd><a href="/search?drive={{ file.drive_name | urlencode }}">{{ file.drive_name }}</a></dd></div>
     <div><dt>Path</dt><dd><code>{{ file.file_path }}</code></dd></div>
     <div><dt>Size</dt><dd>{{ file.size_fmt }}</dd></div>
     <div><dt>Type</dt><dd>{{ file.file_type or "—" }} {% if file.mime_type %}<span class="muted">({{ file.mime_type }})</span>{% endif %}</dd></div>

@@ -27,8 +27,8 @@ tests/               # pytest suite
 python b2_dedup.py serve [--port 8501]          # StorageInsights
 python b2_dedup.py serve --legacy [--port 8501] # previous Streamlit UI
 
-Web: GET /search (all drives, junk hidden), GET /browse, GET /file/{id},
-GET /library (file grid + type filter), GET /timeline (moment cards), GET /moment,
+Web: GET /search (names, one drive's folders, or moments; junk hidden),
+GET /file/{id}, old /browse /library /timeline /moment redirect into /search,
 restore set at /restore-set, ingest wizard at /ingest (preview then job),
 scratch uploads at /scratch (browser files/folders → normal ingest job),
 jobs at /jobs/{id}, Settings at /settings (bucket, catalog backup, verify,
@@ -137,6 +137,6 @@ Tests live in `tests/` and run with pytest (`pip install pytest`, then
 `venv/bin/python -m pytest -q`). After changes:
 
 - CLI: `python b2_dedup.py upload … --dry-run` / `--scan-only` where appropriate
-- UI: `python b2_dedup.py serve` and exercise browse, search, restore set, downloads
+- UI: `python b2_dedup.py serve` and exercise search (including a drive and moments), restore set, downloads
 
 Do not commit secrets, `data/`, `venv/`, or large local DB backups (`*.prev`, accidental `data (copy)/` trees).

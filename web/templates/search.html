@@ -2,7 +2,7 @@
 {% block title %}Search · StorageInsights{% endblock %}
 {% block content %}
 <h1>Search</h1>
-<p class="lede">Looks across every drive. A matching folder is listed on its own, and the same file stored in more than one place is grouped together. Junk and version-control trees are hidden unless you ask for them.</p>
+<p class="lede">Search names across every drive, open one drive and walk its folders, or group a year into moments. The same file stored in more than one place stays on one row. Junk and version-control trees stay hidden unless you ask for them.</p>
 
 <form class="filters" method="get" action="/search">
     <p class="search">
@@ -10,9 +10,16 @@
         <input id="q" name="q" type="search" value="{{ q }}" placeholder="e.g. triplets or IMG_8730" autofocus>
         <button type="submit">Search</button>
     </p>
+    <input type="hidden" name="path" value="{{ path }}">
     <div class="filter-row">
+        <label>Show
+            <select name="view">
+                <option value="files" {% if form_view != 'moments' %}selected{% endif %}>Files</option>
+                <option value="moments" {% if form_view == 'moments' %}selected{% endif %}>Moments</option>
+            </select>
+        </label>
         <label>Drive
-            <select name="drive">
+            <select name="drive" onchange="if (this.form.path) this.form.path.value = ''">
                 <option value="">All drives</option>
                 {% for d in drives %}
                 <option value="{{ d }}" {% if d == drive %}selected{% endif %}>{{ d }}</option>
@@ -48,6 +55,14 @@
         <label>Year taken
             <input name="year" value="{{ year }}" placeholder="2016" inputmode="numeric">
         </label>
+        <label>Month
+            <select name="month">
+                <option value="">All months</option>
+                {% for m in month_choices %}
+                <option value="{{ m.value }}" {% if m.value == month %}selected{% endif %}>{{ m.name }}</option>
+                {% endfor %}
+            </select>
+        </label>
         <label>Extensions
             <input name="ext" value="{{ ext }}" placeholder="jpg, cr2">
         </label>
@@ -58,24 +73,50 @@
     </div>
 </form>
 
-{% if results %}
+{% if mode == 'folder' or (mode == 'search' and drive and path) %}
+<nav class="crumbs" aria-label="Breadcrumb">
+    {% if parent or path %}
+    <a href="/search?drive={{ drive | urlencode }}&amp;path={{ parent | urlencode }}{% if walk %}&amp;{{ walk }}{% endif %}">Up</a>
+    <span aria-hidden="true">·</span>
+    {% endif %}
+    {% for c in crumbs %}
+        {% if not loop.last %}
+        <a href="/search?drive={{ drive | urlencode }}{% if c.path %}&amp;path={{ c.path | urlencode }}{% endif %}{% if walk %}&amp;{{ walk }}{% endif %}">{{ c.label }}</a>
+        <span aria-hidden="true">/</span>
+        {% else %}
+        <span>{{ c.label }}</span>
+        {% endif %}
+    {% endfor %}
+</nav>
+{% endif %}
+
+{% if mode == 'search' %}
+{% if path %}
+<p class="meta">Names inside this folder.
+    {% if drive %}
+    <a href="/search?q={{ q | urlencode }}&amp;drive={{ drive | urlencode }}{% if walk %}&amp;{{ walk }}{% endif %}">Whole drive</a>
+    {% else %}
+    <a href="/search?q={{ q | urlencode }}{% if walk %}&amp;{{ walk }}{% endif %}">All drives</a>
+    {% endif %}
+</p>
+{% endif %}
 {% if results.folder_total %}
 <h2 class="results-heading">Folders</h2>
 <p class="meta">{{ results.folder_label }}</p>
 <ul class="hit-list">
-    {% for folder in results.folders %}
+    {% for item in results.folders %}
     <li>
-        <a href="/browse?drive={{ folder.drive_name | urlencode }}&amp;path={{ folder.path | urlencode }}" title="{{ folder.drive_name }}/{{ folder.path }}">{{ folder.name }}</a>
-        <span class="badge">{{ folder.drive_name }}</span>
-        {% if folder.parent %}<span class="path-hint" title="{{ folder.path }}">{{ folder.parent }}</span>{% endif %}
-        {% if folder.others %}
+        <a href="/search?drive={{ item.drive_name | urlencode }}&amp;path={{ item.path | urlencode }}{% if walk %}&amp;{{ walk }}{% endif %}" title="{{ item.drive_name }}/{{ item.path }}">{{ item.name }}</a>
+        <span class="badge">{{ item.drive_name }}</span>
+        {% if item.parent %}<span class="path-hint" title="{{ item.path }}">{{ item.parent }}</span>{% endif %}
+        {% if item.others %}
         <details class="places">
-            <summary>{{ folder.others_label }}</summary>
+            <summary>{{ item.others_label }}</summary>
             <ul>
-                {% for drive in folder.others %}
+                {% for other in item.others %}
                 <li>
-                    <span class="badge">{{ drive }}</span>
-                    <a href="/browse?drive={{ drive | urlencode }}&amp;path={{ folder.path | urlencode }}">Open</a>
+                    <span class="badge">{{ other }}</span>
+                    <a href="/search?drive={{ other | urlencode }}&amp;path={{ item.path | urlencode }}{% if walk %}&amp;{{ walk }}{% endif %}">Open</a>
                 </li>
                 {% endfor %}
             </ul>
@@ -100,70 +141,141 @@
 <h2 class="results-heading">Files</h2>
 <p class="meta">{{ results.file_label }}</p>
 {% if results.files %}
-<table class="files">
-    <thead>
-        <tr>
-            <th>Name</th>
-            <th>Drive</th>
-            <th>Size</th>
-            <th>Taken</th>
-            <th>Type</th>
-            <th><span class="sr-only">Actions</span></th>
-        </tr>
-    </thead>
-    <tbody>
-        {% for f in results.files %}
-        <tr>
-            <td>
-                <a class="file-name" href="/file/{{ f.id }}" title="{{ f.drive_name }}/{{ f.file_path }}">{{ f.name }}</a>
-                {% if f.other_count %}
-                <details class="places">
-                    <summary>{{ f.places_label }}</summary>
-                    <ul>
-                        {% for p in f.places %}
-                        <li>
-                            <span class="badge">{{ p.drive_name }}</span>
-                            <a href="/file/{{ p.id }}" title="{{ p.drive_name }}/{{ p.file_path }}">{{ p.file_path }}</a>
-                        </li>
-                        {% endfor %}
-                    </ul>
-                    {% if f.places_more %}
-                    <p class="more-places"><a href="/file/{{ f.id }}">And {{ f.places_more_fmt }} more</a></p>
-                    {% endif %}
-                </details>
-                {% endif %}
-            </td>
-            <td><span class="badge">{{ f.drive_name }}</span></td>
-            <td class="num">{{ f.size_fmt }}</td>
-            <td class="num muted">{{ f.taken_fmt or f.mtime_fmt }}</td>
-            <td class="muted">{{ f.file_type or "—" }}</td>
-            <td class="row-actions">
-                {% if f.in_set %}
-                <form method="post" action="/restore-set/remove">
-                    <input type="hidden" name="file_id" value="{{ f.id }}">
-                    <input type="hidden" name="next" value="{{ request.url }}">
-                    <button type="submit" class="icon-btn" aria-label="Remove from restore set" title="Remove from restore set">✓</button>
-                </form>
-                {% else %}
-                <form method="post" action="/restore-set/add">
-                    <input type="hidden" name="file_id" value="{{ f.id }}">
-                    <input type="hidden" name="next" value="{{ request.url }}">
-                    <button type="submit" class="icon-btn" aria-label="Add to restore set" title="Add to restore set">＋</button>
-                </form>
-                {% endif %}
-                <a class="icon-btn" href="/download/{{ f.id }}" aria-label="Download" title="Download">⬇</a>
-            </td>
-        </tr>
-        {% endfor %}
-    </tbody>
-</table>
+{% with files=results.files, show_drive=true %}
+{% include "_file_table.html" %}
+{% endwith %}
 {% include "_pager.html" %}
 {% elif results.folder_total %}
 <p>No files with that name.</p>
 {% else %}
 <p>No files or folders match that search.</p>
 {% endif %}
-{% elif q %}
-<p>No files or folders match that search.</p>
+
+{% elif mode == 'folder' %}
+{% if dirs %}
+<h2 class="results-heading">Folders</h2>
+<ul class="folder-list">
+    {% for d in dirs %}
+    <li>
+        <form method="post" action="/restore-set/add" class="inline">
+            <input type="hidden" name="drive" value="{{ drive }}">
+            <input type="hidden" name="folder_path" value="{{ d.path }}">
+            <input type="hidden" name="next" value="{{ request.url }}">
+            <button type="submit" class="icon-btn" aria-label="Add every file in this folder to the restore set" title="Add every file in this folder to the restore set">＋</button>
+        </form>
+        <a href="/search?drive={{ drive | urlencode }}&amp;path={{ d.path | urlencode }}{% if walk %}&amp;{{ walk }}{% endif %}">{{ d.name }}</a>
+    </li>
+    {% endfor %}
+</ul>
+{% if next_seek %}
+<p>
+    <a href="{{ request.url.include_query_params(seek=next_seek, page=1) }}">More folders</a>
+</p>
+{% endif %}
+{% endif %}
+
+<h2 class="results-heading">Files</h2>
+<p class="meta">{{ folder_files.total_fmt }} {% if folder_files.total == 1 %}file{% else %}files{% endif %}</p>
+{% if folder_files.files %}
+{% with files=folder_files.files, show_drive=false %}
+{% include "_file_table.html" %}
+{% endwith %}
+{% set results = folder_files %}
+{% include "_pager.html" %}
+{% else %}
+<p class="muted">No files in this folder.</p>
+{% endif %}
+
+{% elif mode == 'moments' %}
+{% if not years %}
+<p class="warn">
+    Nothing is dated yet.
+    <a href="/settings#library">Run the date pass in Settings</a> so years and moments line up.
+</p>
+{% else %}
+<nav class="year-nav" aria-label="Years">
+    {% for y in years %}
+    <a href="/search?view=moments&amp;year={{ y.year }}{% if moment_keep %}&amp;{{ moment_keep }}{% endif %}" {% if y.year == year %}aria-current="page"{% endif %}>{{ y.year }}</a>
+    {% endfor %}
+</nav>
+{% if months %}
+<nav class="month-nav" aria-label="Months">
+    {% for m in months %}
+    <a href="/search?view=moments&amp;year={{ year }}&amp;month={{ m.month }}{% if moment_keep %}&amp;{{ moment_keep }}{% endif %}" {% if m.month == month %}aria-current="page"{% endif %}>{{ m.name }}</a>
+    {% endfor %}
+</nav>
+{% endif %}
+{% if moments %}
+<ul class="moment-grid">
+    {% for m in moments %}
+    <li>
+        <a class="card moment-card" href="/search?view=moment&amp;title={{ m.title | urlencode }}&amp;day={{ m.day | urlencode }}{% if moment_keep %}&amp;{{ moment_keep }}{% endif %}">
+            {% if m.thumb_url %}
+            <img src="{{ m.thumb_url }}" alt="" width="400" height="400">
+            {% else %}
+            <span class="thumb-ph">{{ m.title }}</span>
+            {% endif %}
+            <h3>{{ m.title }}</h3>
+            <p>{{ m.when or m.day }} · {{ m.photos_fmt }} {{ m.noun }}</p>
+            {% if m.drives|length > 1 %}
+            <p class="muted">On {{ m.drives|length }} drives</p>
+            {% endif %}
+        </a>
+    </li>
+    {% endfor %}
+</ul>
+{% else %}
+<p>No moments in this month yet.</p>
+{% endif %}
+{% endif %}
+
+{% elif mode == 'moment' %}
+<p class="crumbs">
+    <a href="/search?view=moments{% if year %}&amp;year={{ year }}{% endif %}{% if month %}&amp;month={{ month }}{% endif %}{% if moment_keep %}&amp;{{ moment_keep }}{% endif %}">Moments</a>
+    <span aria-hidden="true">·</span>
+    <span>{{ moment.when or moment.day }}</span>
+</p>
+<h2>{{ moment.title }}</h2>
+<p class="lede">
+    {{ moment.total_fmt }} unique {{ moment.noun }}
+    {% if moment.folder %}<span class="muted"> · {{ moment.folder }}</span>{% endif %}
+</p>
+{% if moment.files %}
+<ul class="photo-grid">
+    {% for f in moment.files %}
+    <li>
+        <a href="/file/{{ f.id }}" title="{{ f.drive_name }}/{{ f.file_path }}">
+            {% if f.thumb_url %}
+            <img src="{{ f.thumb_url }}" alt="" width="400" height="400">
+            {% else %}
+            <span class="thumb-ph">
+                {% if f.file_type %}<span class="badge">{{ f.file_type }}</span>{% endif %}
+                {{ f.name[:22] }}
+            </span>
+            {% endif %}
+            <span class="thumb-cap">{{ f.name }}</span>
+        </a>
+    </li>
+    {% endfor %}
+</ul>
+{% set results = moment %}
+{% include "_pager.html" %}
+{% else %}
+<p>No files in this moment.</p>
+{% endif %}
+
+{% else %}
+<p>Type a name, pick a drive, or set Show to Moments.</p>
+{% if file_type or year or month or ext or origin %}
+<p class="meta">Those filters apply to a name search, a drive, or <a href="/search?view=moments{% if moment_keep %}&amp;{{ moment_keep }}{% endif %}{% if year %}&amp;year={{ year }}{% endif %}{% if month %}&amp;month={{ month }}{% endif %}">moments</a>.</p>
+{% endif %}
+{% if drives %}
+<h2 class="results-heading">Drives</h2>
+<ul class="folder-list">
+    {% for d in drives %}
+    <li><a href="/search?drive={{ d | urlencode }}{% if walk %}&amp;{{ walk }}{% endif %}">{{ d }}</a></li>
+    {% endfor %}
+</ul>
+{% endif %}
 {% endif %}
 {% endblock %}

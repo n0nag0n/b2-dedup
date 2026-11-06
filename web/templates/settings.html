@@ -1,343 +1,442 @@
 {% extends "layout.html" %}
 {% block title %}Settings · StorageInsights{% endblock %}
+{% block head %}
+<script>
+(function () {
+    var map = {
+        storage: "storage",
+        connection: "storage",
+        downloads: "storage",
+        ingest: "ingest",
+        scratch: "ingest",
+        catalog: "catalog",
+        backup: "catalog",
+        verify: "catalog",
+        library: "catalog",
+        maintenance: "catalog",
+        danger: "danger"
+    };
+    var panels = { storage: true, ingest: true, catalog: true, danger: true };
+
+    function currentHash() {
+        return (location.hash || "").replace(/^#/, "");
+    }
+
+    function apply(hash) {
+        var tab = map[hash] || "storage";
+        document.documentElement.dataset.settingsTab = tab;
+        var nav = document.querySelector(".settings-nav");
+        if (!nav) return;
+        nav.querySelectorAll("a").forEach(function (link) {
+            if (link.getAttribute("href") === "#" + tab) link.setAttribute("aria-current", "page");
+            else link.removeAttribute("aria-current");
+        });
+    }
+
+    function reveal(hash) {
+        if (!hash || panels[hash]) return;
+        var el = document.getElementById(hash);
+        if (!el) return;
+        var header = document.querySelector(".top");
+        var offset = (header ? header.offsetHeight : 0) + 16;
+        var top = el.getBoundingClientRect().top + window.scrollY - offset;
+        window.scrollTo(0, Math.max(0, top));
+    }
+
+    apply(currentHash());
+
+    document.addEventListener("DOMContentLoaded", function () {
+        var hash = currentHash();
+        apply(hash);
+        reveal(hash);
+        window.addEventListener("load", function () { reveal(currentHash()); });
+        var nav = document.querySelector(".settings-nav");
+        if (!nav) return;
+        nav.addEventListener("click", function (event) {
+            var link = event.target.closest("a");
+            if (!link || !nav.contains(link)) return;
+            if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey || event.button !== 0) return;
+            var href = link.getAttribute("href") || "";
+            if (href.charAt(0) !== "#") return;
+            event.preventDefault();
+            if (location.hash !== href) history.pushState(null, "", href);
+            apply(href.slice(1));
+            window.scrollTo(0, 0);
+        });
+        window.addEventListener("popstate", function () {
+            var next = currentHash();
+            apply(next);
+            if (next && !panels[next]) reveal(next);
+            else window.scrollTo(0, 0);
+        });
+    });
+})();
+</script>
+{% endblock %}
 {% block content %}
 <h1>Settings</h1>
 <p class="lede">
-    Bucket, restore folder, catalog backup, and a check that B2 still has
-    what the catalog claims. Password is an environment variable, not a user account.
+    Connection and download limits, where new files come from, and the jobs
+    that keep the catalog in sync.
 </p>
 
-<section>
-    <h2 class="section-title">Connection</h2>
-    <form method="post" action="/settings/save" class="restore-form">
-        <label>B2 bucket
-            <input name="bucket_name" type="text" value="{{ bucket }}" placeholder="my-bucket-name">
-        </label>
-        <label>Restore destination
-            <input name="restore_dest" type="text" value="{{ restore_dest }}" placeholder="/path/to/restore">
-        </label>
-        <label>Workers
-            <input name="workers" type="number" min="1" max="64" value="{{ workers }}">
-        </label>
-        <p class="hint">Used as the default for ingest, verify, and restore jobs.</p>
-        <p class="actions">
-            <button type="submit">Save</button>
-        </p>
-    </form>
-    <p class="muted">
-        LAN password:
-        {% if password_set %}
-        set via <code>VAULT_PASSWORD</code>.
-        {% else %}
-        not set — the UI is open on the local network.
-        {% endif %}
-    </p>
-</section>
+<nav class="settings-nav" aria-label="Settings sections">
+    <a href="#storage" aria-controls="storage">Storage</a>
+    <a href="#ingest" aria-controls="ingest">Ingest</a>
+    <a href="#catalog" aria-controls="catalog">Catalog</a>
+    <a href="#danger" aria-controls="danger">Remove drive</a>
+</nav>
 
-<section id="downloads">
-    <h2 class="section-title">Browser downloads</h2>
-    <p class="lede">
-        Files download straight from B2 to the browser. These caps stop one
-        click from turning into a whole drive, and keep prepared archives from
-        filling the server's disk.
-    </p>
-    <form method="post" action="/settings/downloads" class="restore-form">
-        <label>Max files per download
-            <input name="max_files" type="number" min="1" max="100000" value="{{ downloads.max_files }}">
-        </label>
-        <label>Max size per download (GB)
-            <input name="max_gb" type="number" min="0.1" step="0.1" value="{{ downloads.max_gb }}">
-        </label>
-        <label>Stream instead of staging above (MB)
-            <input name="stream_threshold_mb" type="number" min="0" step="50" value="{{ downloads.stream_threshold_mb }}">
-        </label>
-        <label>Keep prepared ZIPs for (hours)
-            <input name="expiry_hours" type="number" min="1" max="720" value="{{ downloads.expiry_hours }}">
-        </label>
-        <p class="hint">
-            At or below the threshold the restore set offers a prepared ZIP with
-            progress and resume. Above it the ZIP streams, using no staging disk.
-            Single-file downloads are never capped.
-        </p>
-        <p class="actions">
-            <button type="submit">Save download limits</button>
-        </p>
-    </form>
-</section>
-
-<section>
-    <h2 class="section-title">Where disks show up</h2>
-    <p class="lede">
-        This computer looks like {{ ingest_scan.os }}. Ingest watches
-        {% for place in ingest_scan.places %}<code>{{ place }}</code>{% if not loop.last %}, {% endif %}{% endfor %}
-        for plugged-in disks. Add a folder only if a disk is mounted somewhere else.
-    </p>
-    {% if ingest_extra_roots %}
-    <ul class="copy-list">
-        {% for root in ingest_extra_roots %}
-        <li>
-            <code class="wrap">{{ root }}</code>
-            <form method="post" action="/settings/ingest-root/remove">
-                <input type="hidden" name="folder" value="{{ root }}">
-                <button type="submit" class="linkish">Remove</button>
-            </form>
-        </li>
-        {% endfor %}
-    </ul>
-    {% else %}
-    <p class="muted">No extra folders yet.</p>
-    {% endif %}
-    <form method="post" action="/settings/ingest-root/add" class="restore-form">
-        <label>Also look in this folder
-            <input name="folder" type="text" required placeholder="/mnt/old-disks">
-        </label>
-        <p class="actions">
-            <button type="submit">Add folder</button>
-        </p>
-    </form>
-</section>
-
-<section id="scratch">
-    <h2 class="section-title">Scratch drives</h2>
-    <p class="lede">
-        Drop files or folders on the <a href="/scratch">Scratch</a> page and they are
-        ingested as the scratch drive you select, exactly like a plugged-in disk.
-        Staged copies are removed after a successful ingest. The B2 bucket is the
-        one set above.
-    </p>
-    <p>
-        {{ scratch.batches }} staged batch{{ "" if scratch.batches == 1 else "es" }} ·
-        {{ "{:,}".format(scratch.files) }} files · {{ scratch.bytes_fmt }}
-        {% if scratch.free_fmt %}· {{ scratch.free_fmt }} free on that disk{% endif %}
-        · <code class="wrap">{{ scratch_staging }}</code>
-    </p>
-    <ul class="copy-list">
-        {% for name in scratch_drives %}
-        <li>
-            <span>{{ name }}</span>
-            {% if name == scratch_drive %}<span class="badge">selected</span>{% endif %}
-            {% if scratch_drives|length > 1 %}
-            <form method="post" action="/settings/scratch/remove" class="inline">
-                <input type="hidden" name="drive_name" value="{{ name }}">
-                <button type="submit" class="linkish">Remove</button>
-            </form>
-            {% endif %}
-        </li>
-        {% endfor %}
-    </ul>
-    <form method="post" action="/settings/scratch/add" class="restore-form">
-        <label>Add a scratch drive
-            <input name="drive_name" type="text" required maxlength="80" placeholder="Receipts">
-        </label>
-        <p class="hint">
-            The name appears on Home and Browse and is the folder prefix in B2.
-            Adding a drive does not rename files already in the vault.
-        </p>
-        <p class="actions">
-            <button type="submit">Add drive</button>
-        </p>
-    </form>
-    <p class="hint">
-        New uploads are stored in <code class="wrap">{{ scratch_staging }}</code>.
-        <a href="/scratch?browse=1">Choose a different folder</a> on the Scratch page.
-        Pick a folder that is only for Scratch: batches there are deleted after a
-        successful ingest, or after the retention period if they were never ingested.
-    </p>
-    <form method="post" action="/settings/scratch" class="restore-form">
-        <label>Delete staged uploads after (days)
-            <input name="retention_days" type="number" min="1" max="365" value="{{ scratch_retention }}">
-        </label>
-        <p class="hint">
-            Staged batches are swept at startup once they are older than this,
-            even if they were never ingested.
-        </p>
-        <p class="actions">
-            <button type="submit">Save Scratch settings</button>
-        </p>
-    </form>
-    <form method="post" action="/settings/scratch/clear" class="restore-form">
-        <p class="hint">Remove every staged upload that has not been ingested yet. Files already in B2 are untouched.</p>
-        <p class="actions">
-            <button type="submit" class="secondary">Clear staged uploads</button>
-        </p>
-    </form>
-</section>
-
-<section>
-    <h2 class="section-title">Catalog backup</h2>
-    <p class="lede">{{ backup.summary }}</p>
-    <dl class="meta-list">
-        <div>
-            <dt>Local</dt>
-            <dd>{{ backup.local.size_fmt }}{% if backup.local.mtime_fmt %}, modified {{ backup.local.mtime_fmt }}{% endif %}</dd>
-        </div>
-        <div>
-            <dt>Last backup</dt>
-            <dd>
-                {% if backup.backed_mtime_fmt %}
-                {{ backup.backed_size_fmt }}, local snapshot {{ backup.backed_mtime_fmt }}
-                {% else %}
-                never
-                {% endif %}
-            </dd>
-        </div>
-        <div>
-            <dt>On B2</dt>
-            <dd>
-                {% if backup.remote_ts_fmt %}
-                {{ backup.remote_size_fmt }}, uploaded {{ backup.remote_ts_fmt }}
-                {% elif backup.checked_at_fmt %}
-                not found when last checked {{ backup.checked_at_fmt }}
-                {% else %}
-                not checked yet
-                {% endif %}
-            </dd>
-        </div>
-        <div>
-            <dt>Remote path</dt>
-            <dd><code class="wrap">{{ remote_path }}</code></dd>
-        </div>
-    </dl>
-    <div class="actions">
-        <form method="post" action="/settings/backup/refresh" class="inline">
-            <button type="submit" class="secondary">Refresh B2 status</button>
+<section id="storage" class="settings-panel">
+    <article class="settings-card" id="connection">
+        <h2>Connection</h2>
+        <form method="post" action="/settings/save" class="restore-form">
+            <div class="settings-fields">
+                <label>B2 bucket
+                    <input name="bucket_name" type="text" value="{{ bucket }}" placeholder="my-bucket-name">
+                </label>
+                <label>Restore destination
+                    <input name="restore_dest" type="text" value="{{ restore_dest }}" placeholder="/path/to/restore">
+                </label>
+                <label>Workers
+                    <input name="workers" type="number" min="1" max="64" value="{{ workers }}">
+                </label>
+            </div>
+            <p class="hint">Workers are the default for ingest, verify, and restore jobs. The restore folder is for a copy on this computer; browser downloads do not use it.</p>
+            <p class="actions">
+                <button type="submit">Save connection</button>
+            </p>
         </form>
-    </div>
-    <form method="post" action="/settings/backup/sync-to" class="restore-form">
-        <label class="check">
-            <input type="checkbox" name="confirm" value="1" required>
-            Replace the B2 catalog copy. A previous remote copy is kept as <code>.prev</code>.
-        </label>
-        <p class="actions">
-            <button type="submit">Sync catalog to B2</button>
+        <p class="muted">
+            LAN password:
+            {% if password_set %}
+            set via <code>VAULT_PASSWORD</code>.
+            {% else %}
+            not set — the UI is open on the local network.
+            {% endif %}
         </p>
-    </form>
-    <form method="post" action="/settings/backup/sync-from" class="restore-form danger-form">
-        <p class="error">This replaces the live local catalog. A <code>.prev</code> copy is kept beside it.</p>
-        <label>Type <code>{{ sync_from_phrase }}</code> to download the B2 catalog
-            <input name="confirm" type="text" autocomplete="off" placeholder="{{ sync_from_phrase }}">
-        </label>
-        <p class="actions">
-            <button type="submit">Sync catalog from B2</button>
+    </article>
+
+    <article class="settings-card" id="downloads">
+        <h2>Browser downloads</h2>
+        <p class="lede">
+            Files download straight from B2 to the browser. These caps stop one
+            click from turning into a whole drive, and keep prepared archives from
+            filling this computer's disk.
         </p>
-    </form>
+        <form method="post" action="/settings/downloads" class="restore-form">
+            <div class="settings-fields">
+                <label>Max files per download
+                    <input name="max_files" type="number" min="1" max="100000" value="{{ downloads.max_files }}">
+                </label>
+                <label>Max size per download (GB)
+                    <input name="max_gb" type="number" min="0.1" step="0.1" value="{{ downloads.max_gb }}">
+                </label>
+                <label>Stream instead of staging above (MB)
+                    <input name="stream_threshold_mb" type="number" min="0" step="50" value="{{ downloads.stream_threshold_mb }}">
+                </label>
+                <label>Keep prepared ZIPs for (hours)
+                    <input name="expiry_hours" type="number" min="1" max="720" value="{{ downloads.expiry_hours }}">
+                </label>
+            </div>
+            <p class="hint">
+                At or below the threshold the restore set offers a prepared ZIP with
+                progress and resume. Above it the ZIP streams, using no staging disk.
+                Single-file downloads are never capped.
+            </p>
+            <p class="actions">
+                <button type="submit">Save download limits</button>
+            </p>
+        </form>
+    </article>
 </section>
 
-<section>
-    <h2 class="section-title">Verify B2</h2>
-    <p class="lede">{{ health.verify.summary }}</p>
-    {% if health.verify.at_fmt %}
-    <p class="muted">Last run {{ health.verify.at_fmt }} UTC · {{ health.verify.mode }} · {{ health.verify.checked }} checked</p>
-    {% endif %}
-    {% if health.verify.missing_paths %}
-    <ul class="copy-list">
-        {% for path in health.verify.missing_paths %}
-        <li><code class="wrap">{{ path }}</code></li>
-        {% endfor %}
-    </ul>
-    {% endif %}
-    <form method="post" action="/settings/verify" class="restore-form">
-        <label>Check
-            <select name="mode">
-                <option value="sample" selected>Sample (fast daily check)</option>
-                <option value="full">Full (list the bucket, slower)</option>
-            </select>
-        </label>
-        <label>Sample size
-            <input name="sample_size" type="number" min="1" max="10000" value="{{ sample_size }}">
-        </label>
-        <p class="hint">Sample asks B2 whether random originals exist. Full lists the bucket once and diffs it against every original with an upload path. Scan-only rows without a remote path are counted, not treated as missing.</p>
-        <p class="actions">
-            <button type="submit">Start verify job</button>
+<section id="ingest" class="settings-panel">
+    <article class="settings-card">
+        <h2>Where disks show up</h2>
+        <p class="lede">
+            This computer looks like {{ ingest_scan.os }}. Ingest watches
+            {% for place in ingest_scan.places %}<code>{{ place }}</code>{% if not loop.last %}, {% endif %}{% endfor %}
+            for plugged-in disks. Add a folder only if a disk is mounted somewhere else.
         </p>
-    </form>
-</section>
+        {% if ingest_extra_roots %}
+        <ul class="copy-list">
+            {% for root in ingest_extra_roots %}
+            <li>
+                <code class="wrap">{{ root }}</code>
+                <form method="post" action="/settings/ingest-root/remove">
+                    <input type="hidden" name="folder" value="{{ root }}">
+                    <button type="submit" class="linkish">Remove</button>
+                </form>
+            </li>
+            {% endfor %}
+        </ul>
+        {% else %}
+        <p class="muted">No extra folders yet.</p>
+        {% endif %}
+        <form method="post" action="/settings/ingest-root/add" class="restore-form">
+            <div class="settings-row">
+                <label>Also look in this folder
+                    <input name="folder" type="text" required placeholder="/mnt/old-disks">
+                </label>
+                <button type="submit">Add folder</button>
+            </div>
+        </form>
+    </article>
 
-<section>
-    <h2 class="section-title">Library dates and previews</h2>
-    <p class="lede">
-        The timeline uses a best-effort date: EXIF when a thumbnail job has seen the file,
-        otherwise the folder name, otherwise the filesystem time.
-        Previews are stored locally under <code>data/thumbs/</code> (one JPEG per unique hash).
-    </p>
-    <p>
-        {{ library.dated_fmt }} of {{ library.images_fmt }} searchable photos have a date
-        ({{ library.folder_fmt }} from folders, {{ library.mtime_fmt }} from mtime,
-        {{ library.exif_fmt }} from EXIF).
-        {{ thumbs.thumbs_on_disk }} previews on disk
-        {% if thumbs.thumbs_error %} · {{ thumbs.thumbs_error }} failed{% endif %}.
-    </p>
-    <form method="post" action="/settings/dates" class="restore-form">
-        <p class="hint">Reads the catalog only — no B2 download. Safe to re-run; EXIF dates are left alone.</p>
-        <p class="actions">
-            <button type="submit">Fill dates from folders and file times</button>
+    <article class="settings-card" id="scratch">
+        <h2>Scratch drives</h2>
+        <p class="lede">
+            Drop files or folders on the <a href="/scratch">Scratch</a> page and they are
+            ingested as the scratch drive you select, exactly like a plugged-in disk.
+            Staged copies are removed after a successful ingest. The B2 bucket is the
+            one on the Storage tab.
         </p>
-    </form>
-    <form method="post" action="/settings/thumbs" class="restore-form">
-        <label>How many unique photos to preview
-            <select name="limit">
-                <option value="200">200 (quick look)</option>
-                <option value="500" selected>500</option>
-                <option value="2000">2,000</option>
-                <option value="0">Keep going (resumes; skips ones already done)</option>
-            </select>
-        </label>
+        <p>
+            {{ scratch.batches }} staged batch{{ "" if scratch.batches == 1 else "es" }} ·
+            {{ "{:,}".format(scratch.files) }} files · {{ scratch.bytes_fmt }}
+            {% if scratch.free_fmt %}· {{ scratch.free_fmt }} free on that disk{% endif %}
+            · <code class="wrap">{{ scratch_staging }}</code>
+        </p>
+        <ul class="copy-list">
+            {% for name in scratch_drives %}
+            <li>
+                <span>{{ name }}</span>
+                {% if name == scratch_drive %}<span class="badge">selected</span>{% endif %}
+                {% if scratch_drives|length > 1 %}
+                <form method="post" action="/settings/scratch/remove" class="inline">
+                    <input type="hidden" name="drive_name" value="{{ name }}">
+                    <button type="submit" class="linkish">Remove</button>
+                </form>
+                {% endif %}
+            </li>
+            {% endfor %}
+        </ul>
+        <form method="post" action="/settings/scratch/add" class="restore-form">
+            <div class="settings-row">
+                <label>Add a scratch drive
+                    <input name="drive_name" type="text" required maxlength="80" placeholder="Receipts">
+                </label>
+                <button type="submit">Add drive</button>
+            </div>
+            <p class="hint">
+                The name appears on Home and Browse and is the folder prefix in B2.
+                Adding a drive does not rename files already in the vault.
+            </p>
+        </form>
         <p class="hint">
-            Downloads originals from B2 to build JPEGs. Canon CR2 files use the embedded preview.
-            Unique photos are about {{ thumbs.original_images }} originals.
+            <a href="/scratch?browse=1">Choose a different folder</a> on the Scratch page.
+            Pick a folder that is only for Scratch: batches there are deleted after a
+            successful ingest, or after the retention period if they were never ingested.
         </p>
-        <p class="actions">
-            <button type="submit">Start thumbnail job</button>
+        <div class="settings-pair">
+            <form method="post" action="/settings/scratch" class="restore-form">
+                <div class="settings-row">
+                    <label>Delete staged uploads after (days)
+                        <input name="retention_days" type="number" min="1" max="365" value="{{ scratch_retention }}">
+                    </label>
+                    <button type="submit">Save retention</button>
+                </div>
+                <p class="hint">
+                    Staged batches are swept at startup once they are older than this,
+                    even if they were never ingested.
+                </p>
+            </form>
+            <form method="post" action="/settings/scratch/clear" class="restore-form">
+                <p class="actions">
+                    <button type="submit" class="secondary">Clear staged uploads</button>
+                </p>
+                <p class="hint">Remove every staged upload that has not been ingested yet. Files already in B2 are untouched.</p>
+            </form>
+        </div>
+    </article>
+
+    <article class="settings-card">
+        <h2>Junk rules</h2>
+        <p>Never hashed or uploaded: folders named
+            {% for name in junk_dirs %}<code>{{ name }}</code>{% if not loop.last %}, {% endif %}{% endfor %},
+            files named
+            {% for name in junk_files %}<code>{{ name }}</code>{% if not loop.last %}, {% endif %}{% endfor %},
+            and AppleDouble <code>._*</code> / Spotlight files.
         </p>
-    </form>
+        <p class="muted">
+            Hidden from default search but kept on restore:
+            {% for name in hide_dirs %}<code>{{ name }}</code>{% if not loop.last %}, {% endif %}{% endfor %}.
+        </p>
+    </article>
 </section>
 
-<section>
-    <h2 class="section-title">Junk rules</h2>
-    <p>Never hashed or uploaded: folders named
-        {% for name in junk_dirs %}<code>{{ name }}</code>{% if not loop.last %}, {% endif %}{% endfor %},
-        files named
-        {% for name in junk_files %}<code>{{ name }}</code>{% if not loop.last %}, {% endif %}{% endfor %},
-        and AppleDouble <code>._*</code> / Spotlight files.
-    </p>
-    <p class="muted">
-        Hidden from default search but kept on restore:
-        {% for name in hide_dirs %}<code>{{ name }}</code>{% if not loop.last %}, {% endif %}{% endfor %}.
-    </p>
-</section>
+<section id="catalog" class="settings-panel">
+    <p class="lede">These start jobs. Progress shows on the Jobs page.</p>
 
-<section class="danger">
-    <h2 class="section-title">Remove a drive from the catalog</h2>
-    <p>
-        This deletes local metadata for one drive. B2 objects stay unless you
-        also check the box below. Type the exact drive name to confirm.
-    </p>
-    {% if drives %}
-    <form method="post" action="/settings/delete-drive" class="restore-form">
-        <label>Drive
-            <select name="drive_name">
-                {% for d in drives %}
-                <option value="{{ d }}">{{ d }}</option>
+    <article class="settings-card" id="backup">
+        <h2>Catalog backup</h2>
+        <p class="lede">{{ backup.summary }}</p>
+        <dl class="meta-list">
+            <div>
+                <dt>Local</dt>
+                <dd>{{ backup.local.size_fmt }}{% if backup.local.mtime_fmt %}, modified {{ backup.local.mtime_fmt }}{% endif %}</dd>
+            </div>
+            <div>
+                <dt>Last backup</dt>
+                <dd>
+                    {% if backup.backed_mtime_fmt %}
+                    {{ backup.backed_size_fmt }}, local snapshot {{ backup.backed_mtime_fmt }}
+                    {% else %}
+                    never
+                    {% endif %}
+                </dd>
+            </div>
+            <div>
+                <dt>On B2</dt>
+                <dd>
+                    {% if backup.remote_ts_fmt %}
+                    {{ backup.remote_size_fmt }}, uploaded {{ backup.remote_ts_fmt }}
+                    {% elif backup.checked_at_fmt %}
+                    not found when last checked {{ backup.checked_at_fmt }}
+                    {% else %}
+                    not checked yet
+                    {% endif %}
+                </dd>
+            </div>
+            <div>
+                <dt>Remote path</dt>
+                <dd><code class="wrap">{{ remote_path }}</code></dd>
+            </div>
+        </dl>
+        <div class="actions">
+            <form method="post" action="/settings/backup/refresh" class="inline">
+                <button type="submit" class="secondary">Refresh B2 status</button>
+            </form>
+        </div>
+        <form method="post" action="/settings/backup/sync-to" class="restore-form">
+            <label class="check">
+                <input type="checkbox" name="confirm" value="1" required>
+                <span>Replace the B2 catalog copy. A previous remote copy is kept as <code>.prev</code>.</span>
+            </label>
+            <p class="actions">
+                <button type="submit">Sync catalog to B2</button>
+            </p>
+        </form>
+        <form method="post" action="/settings/backup/sync-from" class="restore-form danger">
+            <p class="error">This replaces the live local catalog. A <code>.prev</code> copy is kept beside it.</p>
+            <label><span>Type <code>{{ sync_from_phrase }}</code> to download the B2 catalog</span>
+                <input name="confirm" type="text" autocomplete="off" placeholder="{{ sync_from_phrase }}">
+            </label>
+            <p class="actions">
+                <button type="submit">Sync catalog from B2</button>
+            </p>
+        </form>
+    </article>
+
+    <div class="settings-split">
+        <article class="settings-card" id="verify">
+            <h2>Verify B2</h2>
+            <p class="lede">{{ health.verify.summary }}</p>
+            {% if health.verify.at_fmt %}
+            <p class="muted">Last run {{ health.verify.at_fmt }} UTC · {{ health.verify.mode }} · {{ health.verify.checked }} checked</p>
+            {% endif %}
+            {% if health.verify.missing_paths %}
+            <ul class="copy-list">
+                {% for path in health.verify.missing_paths %}
+                <li><code class="wrap">{{ path }}</code></li>
                 {% endfor %}
-            </select>
-        </label>
-        <label>Type the drive name
-            <input name="confirm_name" type="text" autocomplete="off" required>
-        </label>
-        <label class="check">
-            <input type="checkbox" name="delete_from_b2" value="1">
-            Also permanently delete this drive’s objects from B2
-        </label>
-        <label class="check">
-            <input type="checkbox" name="dry_run" value="1">
-            Dry run (list B2 objects only; do not change the catalog)
-        </label>
-        <p class="actions">
-            <button type="submit">Remove drive</button>
+            </ul>
+            {% endif %}
+            <form method="post" action="/settings/verify" class="restore-form">
+                <div class="settings-fields">
+                    <label>Check
+                        <select name="mode">
+                            <option value="sample" selected>Sample (fast daily check)</option>
+                            <option value="full">Full (list the bucket, slower)</option>
+                        </select>
+                    </label>
+                    <label>Sample size
+                        <input name="sample_size" type="number" min="1" max="10000" value="{{ sample_size }}">
+                    </label>
+                </div>
+                <p class="hint">Sample asks B2 whether random originals exist. Full lists the bucket once and diffs it against every original with an upload path. Scan-only rows without a remote path are counted, not treated as missing.</p>
+                <p class="actions">
+                    <button type="submit">Start verify job</button>
+                </p>
+            </form>
+        </article>
+
+        <article class="settings-card" id="library">
+            <h2>Dates and previews</h2>
+            <p class="lede">
+                Moments use a best-effort date: EXIF when a thumbnail job has seen the file,
+                otherwise the folder name, otherwise the filesystem time.
+                Previews are stored locally under <code>data/thumbs/</code> (one JPEG per unique hash).
+            </p>
+            <p>
+                {{ library.dated_fmt }} of {{ library.images_fmt }} searchable photos have a date
+                ({{ library.folder_fmt }} from folders, {{ library.mtime_fmt }} from mtime,
+                {{ library.exif_fmt }} from EXIF).
+                {{ thumbs.thumbs_on_disk }} previews on disk
+                {% if thumbs.thumbs_error %} · {{ thumbs.thumbs_error }} failed{% endif %}.
+            </p>
+            <form method="post" action="/settings/dates" class="restore-form">
+                <p class="hint">Reads the catalog only — no B2 download. Safe to re-run; EXIF dates are left alone.</p>
+                <p class="actions">
+                    <button type="submit">Fill dates from folders and file times</button>
+                </p>
+            </form>
+            <form method="post" action="/settings/thumbs" class="restore-form">
+                <label>How many unique photos to preview
+                    <select name="limit">
+                        <option value="200">200 (quick look)</option>
+                        <option value="500" selected>500</option>
+                        <option value="2000">2,000</option>
+                        <option value="0">Keep going (resumes; skips ones already done)</option>
+                    </select>
+                </label>
+                <p class="hint">
+                    Downloads originals from B2 to build JPEGs. Canon CR2 files use the embedded preview.
+                    Unique photos are about {{ thumbs.original_images }} originals.
+                </p>
+                <p class="actions">
+                    <button type="submit">Start thumbnail job</button>
+                </p>
+            </form>
+        </article>
+    </div>
+</section>
+
+<section id="danger" class="settings-panel">
+    <h2>Remove a drive from the catalog</h2>
+    <div class="danger">
+        <p>
+            This deletes local metadata for one drive. B2 objects stay unless you
+            also check the box below. Type the exact drive name to confirm.
         </p>
-    </form>
-    {% else %}
-    <p class="muted">No drives in the catalog.</p>
-    {% endif %}
+        {% if drives %}
+        <form method="post" action="/settings/delete-drive" class="restore-form">
+            <label>Drive
+                <select name="drive_name">
+                    {% for d in drives %}
+                    <option value="{{ d }}">{{ d }}</option>
+                    {% endfor %}
+                </select>
+            </label>
+            <label>Type the drive name
+                <input name="confirm_name" type="text" autocomplete="off" required>
+            </label>
+            <label class="check">
+                <input type="checkbox" name="delete_from_b2" value="1">
+                <span>Also permanently delete this drive’s objects from B2</span>
+            </label>
+            <label class="check">
+                <input type="checkbox" name="dry_run" value="1">
+                <span>Dry run (list B2 objects only; do not change the catalog)</span>
+            </label>
+            <p class="actions">
+                <button type="submit">Remove drive</button>
+            </p>
+        </form>
+        {% else %}
+        <p class="muted">No drives in the catalog.</p>
+        {% endif %}
+    </div>
 </section>
 {% endblock %}
