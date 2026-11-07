@@ -578,13 +578,17 @@ a.button:hover { text-decoration: none; }
     margin-top: 0.75rem;
 }
 .filters label { display: flex; flex-direction: column; gap: 0.2rem; font-size: 0.9rem; }
-.filters select, .filters input[type="text"], .restore-form input {
+.filters select,
+.filters input:not([type="checkbox"]):not([type="hidden"]):not([type="search"]),
+.restore-form input {
     font: inherit;
     padding: 0.4rem 0.5rem;
     border: 1px solid var(--line);
     border-radius: 8px;
     background: var(--card);
 }
+.filters input[name="year"] { width: 6rem; }
+.filters input[name="ext"] { width: 12rem; }
 .check { flex-direction: row !important; align-items: center; gap: 0.4rem !important; }
 .restore-form label { display: flex; flex-direction: column; gap: 0.2rem; }
 
