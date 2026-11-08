@@ -1,0 +1,133 @@
+{% extends "layout.html" %}
+{% block title %}{{ title }} · StorageInsights{% endblock %}
+{% block content %}
+<p class="crumbs"><a href="{{ back_href }}">Back</a></p>
+<h1>{{ title }}</h1>
+<p class="lede">Nothing moves until you confirm. The path under To is the one that will be stored.</p>
+
+<div class="move-compare">
+    <div>
+        <h2>From</h2>
+        <p class="move-path"><code>{{ from_label }}</code></p>
+    </div>
+    <div>
+        <h2>To</h2>
+        {% if to_label %}
+        <p class="move-path"><code>{{ to_label }}</code></p>
+        {% if placement %}<p class="hint">{{ placement }}</p>{% endif %}
+        {% else %}
+        <p class="muted">Pick a folder below.</p>
+        {% endif %}
+    </div>
+</div>
+
+{% if creating %}
+<p class="warn">There is no folder named {{ new_name }} here yet. Confirming uses that name.</p>
+{% endif %}
+{% if blocked %}
+<p class="warn">{{ blocked }}</p>
+{% endif %}
+
+{% if examples %}
+<h2 class="section-title">For example</h2>
+<ul class="move-examples">
+    {% for ex in examples %}
+    <li><code>{{ ex.before }}</code> <span aria-hidden="true">→</span> <code>{{ ex.after }}</code></li>
+    {% endfor %}
+</ul>
+{% if more_examples %}
+<p class="hint">The other files in this move follow the same pattern.</p>
+{% endif %}
+{% endif %}
+
+{% if not blocked %}
+<form method="post" action="/catalog/move" class="move-actions">
+    {% for field in post_fields %}
+    <input type="hidden" name="{{ field.name }}" value="{{ field.value }}">
+    {% endfor %}
+    <button type="submit">Move in catalog and B2</button>
+    <a class="button secondary" href="{{ back_href }}">Cancel</a>
+</form>
+{% endif %}
+
+<h2 class="section-title">Choose a folder</h2>
+<form method="get" action="/catalog/move" class="move-picker">
+    {% for field in drive_fields %}
+    <input type="hidden" name="{{ field.name }}" value="{{ field.value }}">
+    {% endfor %}
+    <label>Drive
+        <select name="dest_drive" onchange="this.form.submit()">
+            {% for drive in drives %}
+            <option value="{{ drive }}" {% if drive == dest_drive %}selected{% endif %}>{{ drive }}</option>
+            {% endfor %}
+        </select>
+    </label>
+</form>
+
+<nav class="crumbs" aria-label="Destination">
+    {% if up_href %}
+    <a href="{{ up_href }}">Up</a>
+    <span aria-hidden="true">·</span>
+    {% endif %}
+    {% for c in crumbs %}
+        {% if c.href %}
+        <a href="{{ c.href }}">{{ c.label }}</a>
+        {% else %}
+        <span>{{ c.label }}</span>
+        {% endif %}
+        {% if not loop.last %}<span aria-hidden="true">/</span>{% endif %}
+    {% endfor %}
+</nav>
+<p class="meta">Folders in {{ where_label }}</p>
+{% if folders %}
+<ul class="folder-list">
+    {% for d in folders %}
+    <li>
+        {% if d.href %}
+        <a href="{{ d.href }}">{{ d.name }}</a>
+        {% else %}
+        <span>{{ d.name }}</span>
+        <span class="muted">{{ d.note }}</span>
+        {% endif %}
+    </li>
+    {% endfor %}
+</ul>
+{% else %}
+<p class="muted">No folders here yet.</p>
+{% endif %}
+{% if more_href %}
+<p><a href="{{ more_href }}">More folders</a></p>
+{% endif %}
+
+<details class="move-extra" {% if new_open %}open{% endif %}>
+    <summary>New folder here</summary>
+    <p class="hint">Use this only when the folder is not in the list. The To path updates before anything moves.</p>
+    {% if new_error %}<p class="error">{{ new_error }}</p>{% endif %}
+    <form method="get" action="/catalog/move" class="move-picker">
+        {% for field in new_fields %}
+        <input type="hidden" name="{{ field.name }}" value="{{ field.value }}">
+        {% endfor %}
+        <label>Folder name
+            <input name="new" value="{{ new_name }}" autocomplete="off" maxlength="255">
+        </label>
+        <button type="submit" class="secondary">Show that destination</button>
+    </form>
+</details>
+
+{% if show_name %}
+<details class="move-extra" {% if name_open %}open{% endif %}>
+    <summary>Change the file name</summary>
+    <p class="hint">The file stays in the folder shown above. The To path updates before anything moves.</p>
+    {% if name_error %}<p class="error">{{ name_error }}</p>{% endif %}
+    <form method="get" action="/catalog/move" class="move-picker">
+        {% for field in name_fields %}
+        <input type="hidden" name="{{ field.name }}" value="{{ field.value }}">
+        {% endfor %}
+        <label>File name
+            <input name="name" value="{{ file_name }}" required autocomplete="off" maxlength="255">
+        </label>
+        <button type="submit" class="secondary">Show that name</button>
+    </form>
+</details>
+{% endif %}
+{% endblock %}

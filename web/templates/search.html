@@ -152,22 +152,12 @@
 {% endif %}
 
 {% elif mode == 'folder' %}
-<form method="post" action="/catalog/move" class="move-contents">
-    <input type="hidden" name="kind" value="contents">
-    <input type="hidden" name="drive" value="{{ drive }}">
-    <input type="hidden" name="path" value="{{ path }}">
-    <input type="hidden" name="dest_drive" value="{{ drive }}">
-    <input type="hidden" name="next" value="{{ request.url.path }}{% if request.url.query %}?{{ request.url.query }}{% endif %}">
-    <label>Move everything here into
-        <input name="into" required placeholder="asus-backup" autocomplete="off">
-    </label>
-    <button type="submit">Move in catalog and B2</button>
-</form>
-{% if path %}
-<p class="hint">Each file inside {{ path }} is placed under that folder. {{ path }}/photo.jpg stored as {{ drive }} becomes {{ drive }}/archive/photo.jpg when the folder is archive.</p>
-{% else %}
-<p class="hint">Each folder keeps its name. Documents on {{ drive }} is stored as {{ drive }}/asus-backup/Documents. The catalog and the objects in B2 both move. A folder already inside the destination stays put.</p>
-{% endif %}
+{% set move_back = request.url.path ~ (('?' ~ request.url.query) if request.url.query else '') %}
+<details class="move-entry">
+    <summary>{% if path %}Move contents of {{ path.split('/')[-1] }}{% else %}Move contents{% endif %}</summary>
+    <p class="hint">Opens a screen with this location and the folder you pick, including the path everything will have.</p>
+    <p><a class="button secondary" href="/catalog/move?kind=contents&amp;drive={{ drive | urlencode }}&amp;path={{ path | urlencode }}&amp;next={{ move_back | urlencode }}">Choose a destination</a></p>
+</details>
 {% if dirs %}
 <h2 class="results-heading">Folders</h2>
 <ul class="folder-list">
@@ -176,26 +166,11 @@
         <form method="post" action="/restore-set/add" class="inline">
             <input type="hidden" name="drive" value="{{ drive }}">
             <input type="hidden" name="folder_path" value="{{ d.path }}">
-            <input type="hidden" name="next" value="{{ request.url.path }}{% if request.url.query %}?{{ request.url.query }}{% endif %}">
+            <input type="hidden" name="next" value="{{ move_back }}">
             <button type="submit" class="icon-btn" aria-label="Add every file in this folder to the restore set" title="Add every file in this folder to the restore set">＋</button>
         </form>
         <a href="/search?drive={{ drive | urlencode }}&amp;path={{ d.path | urlencode }}{% if walk %}&amp;{{ walk }}{% endif %}">{{ d.name }}</a>
-        <details class="move-folder">
-            <summary>Move</summary>
-            <form method="post" action="/catalog/move">
-                <input type="hidden" name="kind" value="folder">
-                <input type="hidden" name="drive" value="{{ drive }}">
-                <input type="hidden" name="path" value="{{ d.path }}">
-                <input type="hidden" name="next" value="{{ request.url.path }}{% if request.url.query %}?{{ request.url.query }}{% endif %}">
-                <label>Move {{ d.name }} into
-                    <input name="into" placeholder="asus-backup" autocomplete="off">
-                </label>
-                <label>Drive
-                    <input name="dest_drive" value="{{ drive }}" maxlength="80">
-                </label>
-                <button type="submit" class="secondary">Move in catalog and B2</button>
-            </form>
-        </details>
+        <a class="icon-btn folder-move" href="/catalog/move?kind=folder&amp;drive={{ drive | urlencode }}&amp;path={{ d.path | urlencode }}&amp;next={{ move_back | urlencode }}" aria-label="Move {{ d.name }}" title="Move {{ d.name }}">→</a>
     </li>
     {% endfor %}
 </ul>

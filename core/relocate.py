@@ -222,6 +222,239 @@ def plan_move_contents(source_drive: str, source_path: str, into: str, dest_driv
     return plan
 
 
+def _parent_path(path: str) -> str:
+    if not path or "/" not in path:
+        return ""
+    return path.rsplit("/", 1)[0]
+
+
+def clean_name(raw: str) -> str:
+    """A single folder or file name. Slashes would create a path the user did not pick."""
+    text = (raw or "").strip()
+    if not text:
+        return ""
+    if "/" in text or "\\" in text:
+        raise RelocateError("Use one name, without slashes.")
+    cleaned = clean_catalog_path(text)
+    if "/" in cleaned:
+        raise RelocateError("Use one name, without slashes.")
+    return cleaned
+
+
+def default_move_folder(kind: str, source_path: str, file_path: str = "") -> str:
+    """Folder the destination screen opens on.
+
+    A folder opens on its parent, so the folder itself is not a one-click
+    destination. A file opens on the folder it is already in. Moving the
+    contents of a folder opens on that folder, so nothing moves until a
+    different folder is chosen.
+    """
+    source = clean_catalog_path(source_path) if (source_path or "").strip() else ""
+    if kind == "file":
+        path = clean_catalog_path(file_path) if (file_path or "").strip() else ""
+        return _parent_path(path)
+    if kind == "folder":
+        return _parent_path(source)
+    return source
+
+
+def destination_paths(
+    kind: str,
+    source_drive: str,
+    source_path: str,
+    into: str,
+    dest_drive: str,
+    *,
+    file_path: str = "",
+    file_name: str = "",
+) -> dict:
+    """The From and To labels for a move, without reading the catalog.
+
+    ``to_label`` is empty when the screen still needs a destination folder.
+    ``catalog_dest`` is the folder prefix for a contents move, the resulting
+    folder for a folder move, and the full file path for a file move.
+    """
+    kind = (kind or "").strip()
+    source_drive = (source_drive or "").strip()
+    dest_drive = (dest_drive or source_drive).strip()
+    source = clean_catalog_path(source_path) if (source_path or "").strip() else ""
+    into_path = clean_catalog_path(into) if (into or "").strip() else ""
+    current = clean_catalog_path(file_path) if (file_path or "").strip() else ""
+    leaf = clean_name(file_name) if (file_name or "").strip() else ""
+    if not source_drive or not dest_drive:
+        raise RelocateError("A drive name is required.")
+    same = dest_drive == source_drive
+    blocked = ""
+    kept = ""
+    catalog_dest = ""
+    title = "Move"
+    from_label = f"{source_drive}/{source}" if source else source_drive
+    placement = ""
+
+    if kind == "folder":
+        if not source:
+            raise RelocateError("Choose a folder to move.")
+        kept = source.rsplit("/", 1)[-1]
+        title = f"Move {kept}"
+        catalog_dest = f"{into_path}/{kept}" if into_path else kept
+        if same and catalog_dest == source:
+            blocked = (
+                "This folder is already at the top of this drive. Pick a folder to put it in."
+                if not into_path
+                else "This folder is already in that folder. Pick a different one."
+            )
+        else:
+            try:
+                _check_nesting(source, catalog_dest, same)
+            except RelocateError as exc:
+                blocked = str(exc)
+        if into_path:
+            placement = f"{kept} keeps its name and is stored inside {into_path}."
+        else:
+            placement = f"{kept} keeps its name and is stored at the top of {dest_drive}."
+    elif kind == "contents":
+        kept = source.rsplit("/", 1)[-1] if source else source_drive
+        title = f"Move everything in {kept}"
+        catalog_dest = into_path
+        if same and into_path == source:
+            blocked = (
+                "Pick a folder. These files are already at the top of this drive."
+                if not source
+                else "These files are already in that folder. Pick a different one."
+            )
+        elif same and not into_path:
+            blocked = "Pick a folder. On this drive the files have to land inside a folder."
+        elif source:
+            try:
+                _check_nesting(source, into_path, same)
+            except RelocateError as exc:
+                blocked = str(exc)
+        if not source and into_path:
+            placement = f"Each folder keeps its name and is stored inside {into_path}."
+        elif into_path:
+            placement = (
+                f"What is inside {kept} is stored inside {into_path}. "
+                f"{kept} is not part of the new path."
+            )
+        elif not same:
+            placement = f"Each folder keeps its name and is stored at the top of {dest_drive}."
+    elif kind == "file":
+        if not current:
+            raise RelocateError("Choose a file to move.")
+        if not leaf:
+            leaf = current.rsplit("/", 1)[-1]
+        kept = leaf
+        title = f"Move {leaf}"
+        from_label = f"{source_drive}/{current}"
+        catalog_dest = f"{into_path}/{leaf}" if into_path else leaf
+        if same and catalog_dest == current:
+            blocked = "This file is already in that folder. Pick a different one."
+        if into_path:
+            placement = f"{leaf} is stored inside {into_path}."
+        else:
+            placement = f"{leaf} is stored at the top of {dest_drive}."
+    else:
+        raise RelocateError("That move is not valid.")
+
+    same_place = bool(blocked) and (
+        (kind == "contents" and into_path == source)
+        or (kind == "folder" and catalog_dest == source)
+        or (kind == "file" and catalog_dest == current)
+    )
+    if same_place:
+        to_label = ""
+        placement = ""
+    elif kind == "contents" and into_path:
+        to_label = f"{dest_drive}/{into_path}/…"
+    elif kind == "contents":
+        to_label = f"{dest_drive}/…"
+    else:
+        to_label = f"{dest_drive}/{catalog_dest}" if catalog_dest else ""
+    return {
+        "kind": kind,
+        "blocked": blocked,
+        "title": title,
+        "from_label": from_label,
+        "to_label": to_label,
+        "placement": placement,
+        "catalog_dest": catalog_dest,
+        "into": into_path,
+        "kept": kept,
+        "source_path": source,
+        "dest_drive": dest_drive,
+        "source_drive": source_drive,
+    }
+
+
+def catalog_has_prefix(drive: str, prefix: str) -> bool:
+    """True when any catalog row is that path or inside it."""
+    prefix = clean_catalog_path(prefix) if (prefix or "").strip() else ""
+    if not drive or not prefix:
+        return False
+    conn = connect(readonly=True)
+    try:
+        row = conn.execute(
+            "SELECT 1 FROM files WHERE drive_name = ? "
+            "AND (file_path = ? OR file_path LIKE ? ESCAPE '\\') LIMIT 1",
+            (drive, prefix, _like_prefix(prefix)),
+        ).fetchone()
+    finally:
+        conn.close()
+    return row is not None
+
+
+def preview_moves(
+    kind: str,
+    source_drive: str,
+    source_path: str,
+    into: str,
+    dest_drive: str,
+    *,
+    limit: int = 3,
+) -> list[dict]:
+    """A few before/after catalog paths, using the same rewrite as a real move."""
+    described = destination_paths(kind, source_drive, source_path, into, dest_drive)
+    source = described["source_path"]
+    into_path = described["into"]
+    source_drive = described["source_drive"]
+    dest_drive = described["dest_drive"]
+    if kind == "file":
+        return []
+    conn = connect(readonly=True)
+    try:
+        if kind == "contents" and not source and into_path:
+            rows = conn.execute(
+                "SELECT file_path FROM files WHERE drive_name = ? "
+                "AND NOT (file_path = ? OR file_path LIKE ? ESCAPE '\\') "
+                "ORDER BY file_path LIMIT ?",
+                (source_drive, into_path, _like_prefix(into_path), limit),
+            ).fetchall()
+        elif source or kind == "folder":
+            rows = conn.execute(
+                "SELECT file_path FROM files WHERE drive_name = ? "
+                "AND (file_path = ? OR file_path LIKE ? ESCAPE '\\') "
+                "ORDER BY file_path LIMIT ?",
+                (source_drive, source, _like_prefix(source), limit),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT file_path FROM files WHERE drive_name = ? ORDER BY file_path LIMIT ?",
+                (source_drive, limit),
+            ).fetchall()
+    finally:
+        conn.close()
+    dest_prefix = described["catalog_dest"] if kind == "folder" else into_path
+    examples = []
+    for row in rows:
+        path = row["file_path"]
+        new = _replace_prefix(path, source, dest_prefix)
+        examples.append({
+            "before": f"{source_drive}/{path}",
+            "after": f"{dest_drive}/{new}",
+        })
+    return examples
+
+
 def plan_move_file(file_id: int, dest_drive: str, dest_path: str) -> dict:
     """Move one catalog row onto ``dest_drive`` at ``dest_path``."""
     dest = clean_catalog_path(dest_path)

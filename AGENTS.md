@@ -32,6 +32,7 @@ GET /file/{id}, old /browse /library /timeline /moment redirect into /search,
 restore set at /restore-set, ingest wizard at /ingest (preview then job),
 scratch uploads at /scratch (browser files/folders → normal ingest job;
 a custom staging folder's name is the default vault prefix, e.g. Scratch/asus-backup/…),
+GET /catalog/move picks an existing folder and shows the stored path before
 POST /catalog/move relocates a file or folder in the catalog and in B2 (job type relocate),
 jobs at /jobs/{id}, Settings at /settings (bucket, catalog backup, verify,
 date backfill, thumbnails, browser-download limits, Scratch drive name/retention).

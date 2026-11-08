@@ -41,6 +41,7 @@
             <td class="num muted"><span class="cell-label">Taken</span>{{ f.taken_fmt or f.mtime_fmt }}</td>
             <td class="muted"><span class="cell-label">Type</span>{{ f.file_type or "—" }}</td>
             <td class="row-actions">
+                {% set move_back = request.url.path ~ (('?' ~ request.url.query) if request.url.query else '') %}
                 {% if f.in_set %}
                 <form method="post" action="/restore-set/remove">
                     <input type="hidden" name="file_id" value="{{ f.id }}">
@@ -54,6 +55,7 @@
                     <button type="submit" class="icon-btn" aria-label="Add to restore set" title="Add to restore set">＋</button>
                 </form>
                 {% endif %}
+                <a class="icon-btn" href="/catalog/move?kind=file&amp;file_id={{ f.id }}&amp;next={{ move_back | urlencode }}" aria-label="Move {{ f.name }}" title="Move {{ f.name }}">→</a>
                 <a class="icon-btn" href="/download/{{ f.id }}" aria-label="Download" title="Download">⬇</a>
             </td>
         </tr>

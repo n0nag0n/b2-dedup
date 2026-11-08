@@ -8,10 +8,12 @@ from core.ingest import insert_file_record
 from core.pointers import create_pointer_content
 from core.relocate import (
     RelocateError,
+    destination_paths,
     execute_plan,
     plan_move_contents,
     plan_move_file,
     plan_move_folder,
+    preview_moves,
     run_relocate_job,
 )
 from web.app import app
@@ -206,6 +208,57 @@ def test_file_move_and_duplicate_pointer_follow_the_new_path(tmp_path, monkeypat
     assert followed["original_path"] == "Phone/inbox/a.jpg"
 
 
+def test_destination_screen_shows_where_the_name_lands():
+    folder = destination_paths("folder", "Scratch", "Documents", "asus-backup", "Scratch")
+    assert folder["blocked"] == ""
+    assert folder["to_label"] == "Scratch/asus-backup/Documents"
+    assert "inside asus-backup" in folder["placement"]
+
+    root = destination_paths("contents", "Scratch", "", "asus-backup", "Scratch")
+    assert root["to_label"] == "Scratch/asus-backup/…"
+    assert "keeps its name" in root["placement"]
+
+    nested = destination_paths("contents", "Scratch", "Work", "archive", "Scratch")
+    assert nested["to_label"] == "Scratch/archive/…"
+    assert "not part of the new path" in nested["placement"]
+
+    waiting = destination_paths("folder", "Scratch", "Documents", "", "Scratch")
+    assert waiting["to_label"] == ""
+    assert "Pick a folder" in waiting["blocked"]
+
+    moved = destination_paths(
+        "file",
+        "Scratch",
+        "",
+        "asus-backup",
+        "Scratch",
+        file_path="Documents/a.jpg",
+        file_name="a.jpg",
+    )
+    assert moved["from_label"] == "Scratch/Documents/a.jpg"
+    assert moved["to_label"] == "Scratch/asus-backup/a.jpg"
+
+    slash = False
+    try:
+        destination_paths(
+            "file", "Scratch", "", "asus-backup", "Scratch",
+            file_path="Documents/a.jpg", file_name="nested/a.jpg",
+        )
+    except RelocateError as exc:
+        slash = True
+        assert "without slashes" in str(exc)
+    assert slash
+
+
+def test_preview_moves_rewrite_a_sample(tmp_path, monkeypatch):
+    _isolate(tmp_path, monkeypatch)
+    _add("Scratch", "Documents/a.jpg", None)
+    _add("Scratch", "asus-backup/keep.txt", None, file_hash="h2")
+    sample = preview_moves("contents", "Scratch", "", "asus-backup", "Scratch")
+    assert {"before": "Scratch/Documents/a.jpg", "after": "Scratch/asus-backup/Documents/a.jpg"} in sample
+    assert all("keep.txt" not in item["before"] for item in sample)
+
+
 def test_move_route_queues_a_job_and_search_offers_it(tmp_path, monkeypatch):
     _isolate(tmp_path, monkeypatch)
     file_id = _add("Scratch", "Documents/a.jpg", None)
@@ -218,13 +271,34 @@ def test_move_route_queues_a_job_and_search_offers_it(tmp_path, monkeypatch):
 
     monkeypatch.setattr("web.routes.relocate.enqueue", fake_enqueue)
     client = TestClient(app)
+    _add("Scratch", "asus-backup/keep.txt", None, file_hash="h2")
     page = client.get("/search", params={"drive": "Scratch"})
     assert page.status_code == 200
-    assert "Move everything here into" in page.text
+    assert "Move everything here into" not in page.text
+    assert "Move contents" in page.text
+    assert 'name="into"' not in page.text
+    assert 'aria-label="Move Documents"' in page.text
     assert "Documents" in page.text
     file_page = client.get(f"/file/{file_id}")
     assert file_page.status_code == 200
-    assert "Move in catalog and B2" in file_page.text
+    assert f"/catalog/move?kind=file&amp;file_id={file_id}" in file_page.text
+    assert "Move in catalog and B2" not in file_page.text
+
+    chooser = client.get(
+        "/catalog/move",
+        params={"kind": "folder", "drive": "Scratch", "path": "Documents", "dest": "asus-backup"},
+    )
+    assert chooser.status_code == 200
+    assert "Scratch/asus-backup/Documents" in chooser.text
+    assert 'name="into" value="asus-backup"' in chooser.text
+    assert "Move in catalog and B2" in chooser.text
+    fresh = client.get(
+        "/catalog/move",
+        params={"kind": "folder", "drive": "Scratch", "path": "Documents", "new": "not/a name"},
+    )
+    assert fresh.status_code == 200
+    assert "without slashes" in fresh.text
+    assert "Move in catalog and B2" not in fresh.text
 
     response = client.post(
         "/catalog/move",
