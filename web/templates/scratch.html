@@ -1,7 +1,7 @@
 {% extends "layout.html" %}
 {% block title %}Scratch · StorageInsights{% endblock %}
 {% block head %}
-<script defer src="/static/scratch.js?v=3"></script>
+<script defer src="/static/scratch.js?v=4"></script>
 {% endblock %}
 {% block content %}
 <h1>Scratch</h1>
@@ -9,7 +9,10 @@
     Drop files or whole folders here. They are staged in a folder on this
     computer, then ingested as the scratch drive you select, with the same
     hashing, junk rules, dedup pointers, and catalog entries as a plugged-in
-    disk. Staged copies are removed after a successful ingest.
+    disk. The folder named below is the path inside that drive. When you pick
+    a staging folder yourself, its name starts that path, so a folder named
+    asus-backup is stored as Scratch/asus-backup/…. Staged copies are removed
+    after a successful ingest.
 </p>
 
 {% if not bucket %}
@@ -41,17 +44,25 @@
         </label>
         <button type="submit" class="secondary">Add</button>
     </form>
-    <label>Folder in the drive (optional)
-        <input id="scratch-prefix" type="text" placeholder="receipts/2026">
+    <label>Folder in the drive
+        <input id="scratch-prefix" type="text" value="{{ vault_prefix }}" placeholder="receipts/2026" autocomplete="off">
     </label>
 </div>
+<p id="scratch-dest" class="hint" data-drive="{{ scratch_drive }}">
+    {% if vault_prefix %}
+    New uploads are stored as {{ scratch_drive }}/{{ vault_prefix }}/… The staging folder on this computer is only the waiting area.
+    {% else %}
+    New uploads are stored at the top of {{ scratch_drive }}. Type a folder above to nest them. The staging folder on this computer is only the waiting area.
+    {% endif %}
+</p>
 
 <section class="scratch-browser" id="scratch-store" aria-label="Staging folder">
     <h2 class="section-title">Staging folder</h2>
     <p class="muted">
-        Dropped files are saved in this folder on the computer running StorageInsights,
-        then ingested. Choose any folder on this machine. That is your own computer
-        when the app runs locally, or the server when it runs there.
+        Dropped files wait in this folder on the computer running StorageInsights.
+        They are ingested from here. This path is not the folder in the vault.
+        Choose any folder on this machine. That is your own computer when the app
+        runs locally, or the server when it runs there.
     </p>
     <p>
         <code class="wrap">{{ staging_path }}</code>

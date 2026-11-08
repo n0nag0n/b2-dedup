@@ -172,6 +172,11 @@ def _run_job(job: dict) -> None:
 
         run_thumbs_job(job)
         return
+    if job["type"] == "relocate":
+        from core.relocate import run_relocate_job
+
+        run_relocate_job(job)
+        return
     finish_job(job["id"], "error", f"Unknown job type: {job['type']}")
 
 

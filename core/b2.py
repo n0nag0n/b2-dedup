@@ -71,6 +71,34 @@ class B2Manager:
             print(f"Failed to copy {source_path} to {dest_path}: {e}")
             pass
 
+    def find_file_version(self, remote_path: str):
+        """Latest version of one object name, or None. Raises on API errors."""
+        for fv in self.bucket.list_file_versions(remote_path, fetch_count=1):
+            if fv.file_name == remote_path:
+                return fv
+            return None
+        return None
+
+    def copy_remote(self, source_path: str, dest_path: str) -> None:
+        """Server-side copy that raises when the source is missing or the dest exists."""
+        source = self.find_file_version(source_path)
+        if source is None:
+            raise FileNotFoundError(source_path)
+        if self.find_file_version(dest_path) is not None:
+            raise FileExistsError(dest_path)
+        self.bucket.copy(source.id_, dest_path)
+
+    def delete_remote(self, remote_path: str) -> None:
+        """Delete every version of one object name. Raises when nothing is there."""
+        found = False
+        for fv in self.bucket.list_file_versions(remote_path):
+            if fv.file_name != remote_path:
+                break
+            found = True
+            self.api.delete_file_version(fv.id_, fv.file_name)
+        if not found:
+            raise FileNotFoundError(remote_path)
+
     def upload_file(self, local_path: Path, remote_path: str, progress_listener=None):
         """Upload a local file to B2 with retries for transient IO errors."""
         import errno

@@ -94,6 +94,21 @@
     </form>
 </div>
 
+<h2 class="section-title">Move</h2>
+<form method="post" action="/catalog/move" class="move-file">
+    <input type="hidden" name="kind" value="file">
+    <input type="hidden" name="file_id" value="{{ file.id }}">
+    <input type="hidden" name="next" value="/file/{{ file.id }}">
+    <label>Drive
+        <input name="dest_drive" value="{{ file.drive_name }}" required maxlength="80">
+    </label>
+    <label>Path
+        <input name="dest_path" value="{{ file.file_path }}" required>
+    </label>
+    <button type="submit">Move in catalog and B2</button>
+</form>
+<p class="hint">This updates the catalog row and the object in B2. Other copies keep their own paths. When this row is the original, those copies' pointers follow the new object.</p>
+
 <h2 class="section-title">Same content</h2>
 {% if copies.copies %}
 <p class="lede">{{ copies.total }} path{{ 's' if copies.total != 1 else '' }} share these bytes. This is how the same photo shows up on several old drives.</p>

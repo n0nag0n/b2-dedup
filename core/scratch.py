@@ -72,6 +72,28 @@ def new_batch_id() -> str:
     return f"{stamp}-{uuid.uuid4().hex[:8]}"
 
 
+def default_vault_prefix() -> str:
+    """Folder inside the scratch drive for the next upload.
+
+    The built-in ``data/scratch`` directory stays at the top of the drive.
+    A folder the user picked contributes its own name, so staging in
+    ``.../asus-backup`` is stored as ``Scratch/asus-backup/…``.
+    """
+    root = staging_root()
+    try:
+        if root.resolve() == Path(SCRATCH_DIR).resolve():
+            return ""
+    except OSError:
+        return ""
+    name = root.name.strip()
+    if not name or name in {".", ".."}:
+        return ""
+    try:
+        return sanitize_rel_path(name)
+    except ScratchError:
+        return ""
+
+
 def staging_root() -> Path:
     """Folder that receives new uploads.
 

@@ -746,6 +746,37 @@ a.button.secondary {
 code.wrap { word-break: break-all; }
 .actions { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; margin: 1rem 0; }
 
+.move-contents, .move-file {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem 0.75rem;
+    align-items: end;
+    margin: 0.5rem 0 0.35rem;
+}
+.move-contents label, .move-file label, .move-folder label {
+    display: flex;
+    flex-direction: column;
+    gap: 0.2rem;
+    font-size: 0.9rem;
+}
+.move-contents input, .move-file input, .move-folder input {
+    font: inherit;
+    padding: 0.4rem 0.5rem;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    background: var(--card);
+    color: inherit;
+    min-width: 12rem;
+}
+.move-folder { margin-left: auto; }
+.move-folder summary { cursor: pointer; color: var(--accent); }
+.move-folder form {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+    align-items: end;
+    margin-top: 0.35rem;
+}
 .restore-form { max-width: 36rem; margin: 1rem 0; display: flex; flex-direction: column; gap: 0.5rem; }
 .restore-form select {
     font: inherit;
@@ -940,7 +971,10 @@ button, a.button, .search button {
     .scratch-fields input,
     .scratch-fields select,
     .scratch-browser input,
-    .scratch-add input {
+    .scratch-add input,
+    .move-contents input,
+    .move-file input,
+    .move-folder input {
         width: 100%;
         min-width: 0;
         min-height: var(--tap);

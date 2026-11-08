@@ -229,6 +229,17 @@
         });
         const removeName = document.getElementById("scratch-remove-name");
         if (removeName) removeName.value = name;
+        renderDest();
+    }
+
+    function renderDest() {
+        const dest = document.getElementById("scratch-dest");
+        if (!dest) return;
+        const drive = selectedDrive() || dest.dataset.drive || "Scratch";
+        const prefix = normalizeRel(prefixInput ? prefixInput.value : "").replace(/\/+$/, "");
+        dest.textContent = prefix
+            ? `New uploads are stored as ${drive}/${prefix}/… The staging folder on this computer is only the waiting area.`
+            : `New uploads are stored at the top of ${drive}. Type a folder above to nest them. The staging folder on this computer is only the waiting area.`;
     }
 
     function sleep(ms) {
@@ -559,6 +570,9 @@
     }
 
     syncDriveFields();
+    if (prefixInput) {
+        prefixInput.addEventListener("input", renderDest);
+    }
     if (driveInput) {
         driveInput.addEventListener("change", () => {
             syncDriveFields();

@@ -30,7 +30,9 @@ python b2_dedup.py serve --legacy [--port 8501] # previous Streamlit UI
 Web: GET /search (names, one drive's folders, or moments; junk hidden),
 GET /file/{id}, old /browse /library /timeline /moment redirect into /search,
 restore set at /restore-set, ingest wizard at /ingest (preview then job),
-scratch uploads at /scratch (browser files/folders → normal ingest job),
+scratch uploads at /scratch (browser files/folders → normal ingest job;
+a custom staging folder's name is the default vault prefix, e.g. Scratch/asus-backup/…),
+POST /catalog/move relocates a file or folder in the catalog and in B2 (job type relocate),
 jobs at /jobs/{id}, Settings at /settings (bucket, catalog backup, verify,
 date backfill, thumbnails, browser-download limits, Scratch drive name/retention).
 Home shows catalog-backup and last-verify health (no B2 call on load).

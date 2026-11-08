@@ -41,6 +41,14 @@
     {% if job.payload.limit %} · next {{ job.payload.limit }}{% else %} · continue until done{% endif %}
     {% if job.payload.bucket %} · {{ job.payload.bucket }}{% endif %}
 </p>
+{% elif job.type == 'relocate' and job.payload %}
+<p class="muted">
+    Move
+    {% if job.payload.source_drive %}{{ job.payload.source_drive }}{% endif %}
+    {% if job.payload.source_path %}/ {{ job.payload.source_path }}{% endif %}
+    → {{ job.payload.dest_drive }}
+    {% if job.payload.into %}/ {{ job.payload.into }}{% elif job.payload.dest_path %}/ {{ job.payload.dest_path }}{% endif %}
+</p>
 {% elif job.type == 'zip_export' and job.payload %}
 <p class="muted">
     Prepared ZIP download
