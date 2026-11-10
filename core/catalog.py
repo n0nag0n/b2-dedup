@@ -894,20 +894,30 @@ def resolve_folder_ids(drive: str, folder_path: str) -> list[int]:
     return [int(r["id"]) for r in rows]
 
 
+def _id_chunks(ids: list[int], size: int = 400):
+    for start in range(0, len(ids), size):
+        yield ids[start:start + size]
+
+
 def get_files_by_ids(ids: list[int]) -> list[dict]:
     if not ids:
         return []
     conn = connect(readonly=True)
     try:
-        placeholders = ",".join("?" * len(ids))
-        rows = conn.execute(
-            f"SELECT id, hash, size, drive_name, file_path, upload_path, is_original, "
-            f"file_mtime, file_type, mime_type "
-            f"FROM files WHERE id IN ({placeholders}) ORDER BY drive_name, file_path",
-            ids,
-        ).fetchall()
+        rows = []
+        for chunk in _id_chunks(ids):
+            placeholders = ",".join("?" * len(chunk))
+            rows.extend(
+                conn.execute(
+                    f"SELECT id, hash, size, drive_name, file_path, upload_path, is_original, "
+                    f"file_mtime, file_type, mime_type "
+                    f"FROM files WHERE id IN ({placeholders})",
+                    chunk,
+                ).fetchall()
+            )
     finally:
         conn.close()
+    rows.sort(key=lambda row: (row["drive_name"] or "", row["file_path"] or ""))
     out = []
     for r in rows:
         item = _file_row(r)
@@ -990,13 +1000,16 @@ def delete_drive(drive_name: str) -> int:
 def get_selection_size(ids: list[int]) -> int:
     if not ids:
         return 0
+    total = 0
     conn = connect(readonly=True)
     try:
-        placeholders = ",".join("?" * len(ids))
-        row = conn.execute(
-            f"SELECT COALESCE(SUM(size), 0) FROM files WHERE id IN ({placeholders})",
-            ids,
-        ).fetchone()
+        for chunk in _id_chunks(ids):
+            placeholders = ",".join("?" * len(chunk))
+            row = conn.execute(
+                f"SELECT COALESCE(SUM(size), 0) FROM files WHERE id IN ({placeholders})",
+                chunk,
+            ).fetchone()
+            total += int(row[0] or 0)
     finally:
         conn.close()
-    return int(row[0] or 0)
+    return total

@@ -2,7 +2,7 @@
 {% block title %}Search · StorageInsights{% endblock %}
 {% block content %}
 <h1>Search</h1>
-<p class="lede">Search names across every drive, open one drive and walk its folders, or group a year into moments. The same file stored in more than one place stays on one row. Junk and version-control trees stay hidden unless you ask for them.</p>
+<p class="lede">Search names across every drive, open one drive and walk its folders, or group a year into moments. The same file stored in more than one place stays on one row. Junk and version-control trees stay hidden unless you ask for them. Check files or folders to download, move, or add them together.</p>
 
 <form class="filters" method="get" action="/search">
     <p class="search">
@@ -103,9 +103,18 @@
 {% if results.folder_total %}
 <h2 class="results-heading">Folders</h2>
 <p class="meta">{{ results.folder_label }}</p>
+<p class="pick-all-row">
+    <label class="check">
+        <input type="checkbox" class="pick-all" data-pick-group="search-folders">
+        Select all on this page
+    </label>
+</p>
 <ul class="hit-list">
     {% for item in results.folders %}
     <li>
+        <label class="pick-label">
+            <input class="pick" type="checkbox" name="folder" value="{{ item.drive_name }}&#9;{{ item.path }}" form="pick-form" data-pick-group="search-folders" aria-label="Select folder {{ item.name }}">
+        </label>
         <a href="/search?drive={{ item.drive_name | urlencode }}&amp;path={{ item.path | urlencode }}{% if walk %}&amp;{{ walk }}{% endif %}" title="{{ item.drive_name }}/{{ item.path }}">{{ item.name }}</a>
         <span class="badge">{{ item.drive_name }}</span>
         {% if item.parent %}<span class="path-hint" title="{{ item.path }}">{{ item.parent }}</span>{% endif %}
@@ -141,7 +150,7 @@
 <h2 class="results-heading">Files</h2>
 <p class="meta">{{ results.file_label }}</p>
 {% if results.files %}
-{% with files=results.files, show_drive=true %}
+{% with files=results.files, show_drive=true, pick_group='search-files' %}
 {% include "_file_table.html" %}
 {% endwith %}
 {% include "_pager.html" %}
@@ -160,9 +169,18 @@
 </details>
 {% if dirs %}
 <h2 class="results-heading">Folders</h2>
+<p class="pick-all-row">
+    <label class="check">
+        <input type="checkbox" class="pick-all" data-pick-group="folder-dirs">
+        Select all on this page
+    </label>
+</p>
 <ul class="folder-list">
     {% for d in dirs %}
     <li>
+        <label class="pick-label">
+            <input class="pick" type="checkbox" name="folder" value="{{ drive }}&#9;{{ d.path }}" form="pick-form" data-pick-group="folder-dirs" aria-label="Select folder {{ d.name }}">
+        </label>
         <form method="post" action="/restore-set/add" class="inline">
             <input type="hidden" name="drive" value="{{ drive }}">
             <input type="hidden" name="folder_path" value="{{ d.path }}">
@@ -184,7 +202,7 @@
 <h2 class="results-heading">Files</h2>
 <p class="meta">{{ folder_files.total_fmt }} {% if folder_files.total == 1 %}file{% else %}files{% endif %}</p>
 {% if folder_files.files %}
-{% with files=folder_files.files, show_drive=false %}
+{% with files=folder_files.files, show_drive=false, pick_group='folder-files' %}
 {% include "_file_table.html" %}
 {% endwith %}
 {% set results = folder_files %}
@@ -248,9 +266,18 @@
     {% if moment.folder %}<span class="muted"> · {{ moment.folder }}</span>{% endif %}
 </p>
 {% if moment.files %}
+<p class="pick-all-row">
+    <label class="check">
+        <input type="checkbox" class="pick-all" data-pick-group="moment-files">
+        Select all on this page
+    </label>
+</p>
 <ul class="photo-grid">
     {% for f in moment.files %}
-    <li>
+    <li class="photo-pick">
+        <label class="photo-check">
+            <input class="pick" type="checkbox" name="file_id" value="{{ f.id }}" form="pick-form" data-pick-group="moment-files" aria-label="Select {{ f.name }}">
+        </label>
         <a href="/file/{{ f.id }}" title="{{ f.drive_name }}/{{ f.file_path }}">
             {% if f.thumb_url %}
             <img src="{{ f.thumb_url }}" alt="" width="400" height="400">
@@ -285,4 +312,13 @@
 </ul>
 {% endif %}
 {% endif %}
+<form id="pick-form" class="pick-bar" method="post" action="/search/bulk" hidden aria-label="Selected items">
+    <p class="pick-count" aria-live="polite"><span id="pick-count">0</span> selected</p>
+    <button type="submit" name="action" value="download">Download</button>
+    <button type="submit" name="action" value="move" class="secondary">Move</button>
+    <button type="submit" name="action" value="restore" class="secondary">Add to restore set</button>
+    <button type="button" id="pick-clear" class="secondary">Clear</button>
+    <input type="hidden" name="next" value="{{ request.url.path }}{% if request.url.query %}?{{ request.url.query }}{% endif %}">
+</form>
+<script src="/static/selection.js"></script>
 {% endblock %}

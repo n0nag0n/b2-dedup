@@ -6,6 +6,7 @@ from urllib.parse import urlencode
 from fastapi import APIRouter, Form, Query, Request
 from fastapi.responses import RedirectResponse
 
+from core.bulk import load_pick, selection_label
 from core.catalog import get_drive_names, get_file, list_subdirs
 from core.config import get_bucket_name, normalize_drive_name
 from core.jobs import enqueue
@@ -17,9 +18,11 @@ from core.relocate import (
     default_move_folder,
     destination_paths,
     plan_from_payload,
+    plan_move_selection,
     preview_moves,
+    suggest_selection_folder,
 )
-from web.templating import page_vars, set_notice, templates
+from web.templating import page_vars, session_key, set_notice, templates
 
 router = APIRouter()
 
@@ -108,6 +111,8 @@ def move_page(
     fallback = "/search"
     back = _next_url(request, next, fallback)
     kind = (kind or "").strip()
+    if kind == "selection":
+        return _selection_move(request, dest_drive, dest, new, seek, back)
     if kind not in {"folder", "contents", "file"}:
         set_notice(request, "That move is not valid.")
         return RedirectResponse(back, status_code=303)
@@ -343,6 +348,8 @@ def catalog_move(
 ):
     fallback = "/search"
     back = _next_url(request, next, fallback)
+    if (kind or "").strip() == "selection":
+        return _queue_selection(request, into, dest_drive, back)
     source_drive = _drive(drive)
     target_drive = _drive(dest_drive, source_drive or "")
     if kind in {"folder", "contents"} and not source_drive:
@@ -369,6 +376,217 @@ def catalog_move(
     except RelocateError as exc:
         set_notice(request, str(exc))
         return RedirectResponse(back, status_code=303)
+    except ValueError as exc:
+        set_notice(request, str(exc))
+        return RedirectResponse(back, status_code=303)
+
+    if plan["needs_b2"] and not payload["bucket"]:
+        set_notice(request, "Set a B2 bucket in Settings first. Nothing was moved.")
+        return RedirectResponse(back, status_code=303)
+
+    job_id = enqueue("relocate", payload)
+    set_notice(
+        request,
+        f"Move job #{job_id} queued ({plan['count']} file(s) to {plan['dest_drive']}).",
+    )
+    return RedirectResponse(f"/jobs/{job_id}", status_code=303)
+
+
+def _selection_href(target: str, folder: str, back: str, **extra: str) -> str:
+    params = {
+        "kind": "selection",
+        "dest_drive": target,
+        "dest": folder,
+        "next": back,
+    }
+    params.update({key: value for key, value in extra.items() if value})
+    return "/catalog/move?" + urlencode(params)
+
+
+def _child_note(child_path: str, dest_drive: str, folders: list[tuple[str, str]]) -> str:
+    for drive, source in folders:
+        if drive != dest_drive or not source:
+            continue
+        if child_path == source:
+            return "This is a folder you are moving."
+        if child_path.startswith(source + "/"):
+            return "That folder is inside what you are moving."
+    return ""
+
+
+def _selection_move(request: Request, dest_drive: str, dest: str | None, new: str, seek: str, back: str):
+    pick = load_pick(session_key(request))
+    if not pick or (not pick["file_ids"] and not pick["folders"]):
+        set_notice(request, "Choose files on the search page first.")
+        return RedirectResponse(back, status_code=303)
+
+    file_ids = pick["file_ids"]
+    folders = [(drive, path) for drive, path in pick["folders"]]
+    suggested_drive, suggested_folder = suggest_selection_folder(file_ids, folders)
+    target = _drive(dest_drive, suggested_drive) or ""
+    if not target:
+        set_notice(request, "Drive name is required and cannot contain slashes.")
+        return RedirectResponse(back, status_code=303)
+
+    try:
+        if dest is None:
+            folder = suggested_folder if target == suggested_drive else ""
+        else:
+            folder = clean_catalog_path(dest) if dest.strip() else ""
+    except RelocateError as exc:
+        set_notice(request, str(exc))
+        return RedirectResponse(back, status_code=303)
+
+    new_error = ""
+    new_name = ""
+    if (new or "").strip():
+        try:
+            new_name = clean_name(new)
+        except RelocateError as exc:
+            new_error = str(exc)
+    if new_name and catalog_has_prefix(target, _join(folder, new_name)):
+        return RedirectResponse(
+            _selection_href(target, _join(folder, new_name), back),
+            status_code=303,
+        )
+
+    into = _join(folder, new_name) if new_name else folder
+    label = selection_label(len(file_ids), len(folders)) or "Selection"
+    blocked = ""
+    to_label = ""
+    placement = ""
+    examples: list[dict] = []
+    more_examples = False
+    if not into:
+        blocked = "Pick a folder. Selected items land inside it."
+    else:
+        try:
+            plan = plan_move_selection(file_ids, folders, into, target)
+        except RelocateError as exc:
+            blocked = str(exc)
+        else:
+            to_label = f"{target}/{into}/…"
+            placement = (
+                "Each file keeps its name. Each folder keeps its name "
+                "and is stored inside that folder."
+            )
+            examples = [
+                {
+                    "before": f"{item['drive']}/{item['old_path']}",
+                    "after": f"{item['dest_drive']}/{item['new_path']}",
+                }
+                for item in plan["moves"][:3]
+            ]
+            more_examples = plan["count"] > 3
+
+    listed = list_subdirs(target, folder, seek=seek)
+    children = []
+    for child in listed["dirs"]:
+        item = {"name": child["name"], "href": "", "note": _child_note(child["path"], target, folders)}
+        if not item["note"]:
+            item["href"] = _selection_href(target, child["path"], back)
+        children.append(item)
+
+    base_folder = folder
+    crumbs = []
+    at_top = not folder and not new_name
+    crumbs.append({
+        "label": target,
+        "href": "" if at_top else _selection_href(target, "", back),
+    })
+    walked: list[str] = []
+    parts = folder.split("/") if folder else []
+    for index, part in enumerate(parts):
+        walked.append(part)
+        here = "/".join(walked)
+        current = index == len(parts) - 1 and not new_name
+        crumbs.append({
+            "label": part,
+            "href": "" if current else _selection_href(target, here, back),
+        })
+    if new_name:
+        crumbs.append({"label": new_name, "href": ""})
+
+    if new_name:
+        up_href = _selection_href(target, folder, back)
+    elif folder:
+        up_href = _selection_href(target, _parent(folder), back)
+    else:
+        up_href = ""
+
+    more_href = ""
+    if listed["next_seek"]:
+        more_href = _selection_href(target, folder, back, seek=listed["next_seek"])
+
+    drives = list(get_drive_names())
+    for extra in (suggested_drive, target):
+        if extra and extra not in drives:
+            drives.append(extra)
+
+    stay = [("kind", "selection"), ("dest_drive", target), ("dest", base_folder), ("next", back)]
+    drive_hidden = [(key, "" if key == "dest" else value) for key, value in stay if key != "dest_drive"]
+    new_hidden = list(stay)
+    post = []
+    if not blocked:
+        post = [("kind", "selection"), ("into", into), ("dest_drive", target), ("next", back)]
+
+    return templates.TemplateResponse(
+        "move.html",
+        page_vars(
+            request,
+            title=f"Move {label}",
+            from_label=label,
+            to_label=to_label,
+            placement=placement,
+            blocked=blocked,
+            examples=examples,
+            more_examples=more_examples,
+            crumbs=crumbs,
+            up_href=up_href,
+            folders=children,
+            more_href=more_href,
+            where_label=f"{target}/{folder}" if folder else target,
+            drives=drives,
+            dest_drive=target,
+            drive_fields=_fields(drive_hidden),
+            name_fields=_fields([]),
+            new_fields=_fields(new_hidden),
+            post_fields=_fields(post),
+            file_name="",
+            show_name=False,
+            name_error="",
+            name_open=False,
+            new_name=new_name,
+            new_error=new_error,
+            new_open=bool(new_name or new_error or (new or "").strip()),
+            creating=bool(new_name),
+            back_href=back,
+        ),
+    )
+
+
+def _queue_selection(request: Request, into: str, dest_drive: str, back: str):
+    target = _drive(dest_drive)
+    if not target:
+        set_notice(request, "Drive name is required and cannot contain slashes.")
+        return RedirectResponse(back, status_code=303)
+    pick = load_pick(session_key(request))
+    if not pick or (not pick["file_ids"] and not pick["folders"]):
+        set_notice(request, "Choose files on the search page first.")
+        return RedirectResponse(back, status_code=303)
+    payload = {
+        "kind": "selection",
+        "file_ids": pick["file_ids"],
+        "folders": [[drive, path] for drive, path in pick["folders"]],
+        "into": (into or "").strip(),
+        "dest_drive": target,
+        "bucket": get_bucket_name(),
+    }
+    try:
+        plan = plan_from_payload(payload)
+    except RelocateError as exc:
+        set_notice(request, str(exc))
+        return RedirectResponse(_selection_href(target, payload["into"], back), status_code=303)
     except ValueError as exc:
         set_notice(request, str(exc))
         return RedirectResponse(back, status_code=303)

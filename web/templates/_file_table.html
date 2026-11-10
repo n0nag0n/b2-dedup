@@ -1,4 +1,10 @@
 {% if files %}
+<p class="pick-all-row">
+    <label class="check">
+        <input type="checkbox" class="pick-all" data-pick-group="{{ pick_group|default('files') }}">
+        Select all on this page
+    </label>
+</p>
 <table class="files">
     <thead>
         <tr>
@@ -16,6 +22,9 @@
         {% for f in files %}
         <tr>
             <td class="cell-title">
+                <label class="pick-label">
+                    <input class="pick" type="checkbox" name="file_id" value="{{ f.id }}" form="pick-form" data-pick-group="{{ pick_group|default('files') }}" aria-label="Select {{ f.name }}">
+                </label>
                 <a class="file-name" href="/file/{{ f.id }}" title="{{ f.drive_name }}/{{ f.file_path }}">{{ f.name }}</a>
                 {% if f.other_count %}
                 <details class="places">

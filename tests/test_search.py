@@ -102,6 +102,10 @@ def test_search_page_shows_filename_places_and_folders():
     assert "· copy" not in html
     assert 'aria-label="Download"' in html
     assert 'aria-label="Add to restore set"' in html
+    assert 'id="pick-form"' in html
+    assert 'action="/search/bulk"' in html
+    assert 'class="pick"' in html
+    assert "/static/selection.js" in html
     assert "Also in " in html
     assert 'title="' in html
     # The full path stays on the tooltip; the link text is the file name.
@@ -116,6 +120,7 @@ def test_search_page_shows_filename_places_and_folders():
     assert "No files or folders match" not in text
     assert 'href="/browse' not in text
     assert "/search?drive=" in text
+    assert 'name="folder"' in text
 
 
 def test_search_path_limits_hits_to_that_folder():

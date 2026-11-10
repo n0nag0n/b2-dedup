@@ -101,25 +101,12 @@ def _exact_taken(drive: str, paths: list[str], moving_ids: set[int]) -> set[str]
         conn.close()
 
 
-def _assemble(source_drive: str, dest_drive: str, pairs: list[tuple[dict, str]]) -> dict:
-    if not pairs:
-        raise RelocateError("Nothing is stored at that path.")
-    moving_ids = {int(row["id"]) for row, _new in pairs}
-    old_paths = {row["file_path"] for row, _new in pairs} if source_drive == dest_drive else set()
-    kept: list[tuple[dict, str]] = []
-    candidate_paths: list[str] = []
-    for row, new in pairs:
-        if source_drive == dest_drive and new == row["file_path"]:
-            continue
-        if new in old_paths and new != row["file_path"]:
-            raise RelocateError(
-                "That destination overlaps files included in this move. "
-                "Move one folder at a time."
-            )
-        kept.append((row, new))
-        candidate_paths.append(new)
+def _pack_moves(dest_drive: str, kept: list[tuple[dict, str]]) -> dict:
+    """Turn kept (row, new path) pairs into the plan ``execute_plan`` runs."""
     if not kept:
         raise RelocateError("Those files are already in that folder.")
+    moving_ids = {int(row["id"]) for row, _new in kept}
+    candidate_paths = [new for _row, new in kept]
     taken = _exact_taken(dest_drive, candidate_paths, moving_ids)
     conflicts = [path for path in candidate_paths if path in taken]
     if conflicts:
@@ -148,12 +135,32 @@ def _assemble(source_drive: str, dest_drive: str, pairs: list[tuple[dict, str]])
         for item in moves
     )
     return {
-        "source_drive": source_drive,
+        "source_drive": "",
         "dest_drive": dest_drive,
         "moves": moves,
         "needs_b2": needs_b2,
         "count": len(moves),
     }
+
+
+def _assemble(source_drive: str, dest_drive: str, pairs: list[tuple[dict, str]]) -> dict:
+    if not pairs:
+        raise RelocateError("Nothing is stored at that path.")
+    same = source_drive == dest_drive
+    old_paths = {row["file_path"] for row, _new in pairs} if same else set()
+    kept: list[tuple[dict, str]] = []
+    for row, new in pairs:
+        if same and new == row["file_path"]:
+            continue
+        if new in old_paths and new != row["file_path"]:
+            raise RelocateError(
+                "That destination overlaps files included in this move. "
+                "Move one folder at a time."
+            )
+        kept.append((row, new))
+    plan = _pack_moves(dest_drive, kept)
+    plan["source_drive"] = source_drive
+    return plan
 
 
 def plan_move_folder(source_drive: str, source_path: str, into: str, dest_drive: str) -> dict:
@@ -455,6 +462,144 @@ def preview_moves(
     return examples
 
 
+def _rows_by_ids(ids: list[int]) -> list[dict]:
+    if not ids:
+        return []
+    columns = "id, hash, drive_name, file_path, upload_path, is_original"
+    found: dict[int, dict] = {}
+    conn = connect(readonly=True)
+    try:
+        for start in range(0, len(ids), 400):
+            chunk = [int(i) for i in ids[start:start + 400]]
+            marks = ",".join("?" for _ in chunk)
+            rows = conn.execute(
+                f"SELECT {columns} FROM files WHERE id IN ({marks})",
+                tuple(chunk),
+            ).fetchall()
+            for row in rows:
+                found[int(row["id"])] = dict(row)
+    finally:
+        conn.close()
+    return [found[int(i)] for i in ids if int(i) in found]
+
+
+def _covered_by_folder(drive: str, path: str, folders: list[tuple[str, str]]) -> bool:
+    for folder_drive, folder_path in folders:
+        if drive != folder_drive:
+            continue
+        if path == folder_path or path.startswith(folder_path + "/"):
+            return True
+    return False
+
+
+def suggest_selection_folder(
+    file_ids: list[int],
+    folders: list[tuple[str, str]],
+) -> tuple[str, str]:
+    """Drive and folder the selection move screen opens on."""
+    if folders:
+        drive, path = folders[0]
+        parent = path.rsplit("/", 1)[0] if "/" in path else ""
+        return drive, parent
+    rows = _rows_by_ids(list(file_ids)[:1])
+    if not rows:
+        return "", ""
+    path = rows[0]["file_path"]
+    parent = path.rsplit("/", 1)[0] if "/" in path else ""
+    return rows[0]["drive_name"], parent
+
+
+def plan_move_selection(
+    file_ids: list[int],
+    folders: list[tuple[str, str]],
+    into: str,
+    dest_drive: str,
+) -> dict:
+    """Move checked files and folders into one existing folder.
+
+    A folder keeps its name. A file keeps its name and lands directly in the
+    destination, so ``Photos/2014/a.jpg`` becomes ``inbox/a.jpg``. A file that
+    is already inside a checked folder is moved with that folder.
+    """
+    dest_drive = (dest_drive or "").strip()
+    into_path = clean_catalog_path(into) if (into or "").strip() else ""
+    if not dest_drive:
+        raise RelocateError("A drive name is required.")
+    if not into_path:
+        raise RelocateError("Pick a folder. Selected items land inside it.")
+
+    normalized: list[tuple[str, str]] = []
+    for drive, path in folders:
+        drive = (drive or "").strip()
+        source = clean_catalog_path(path) if (path or "").strip() else ""
+        if not drive or not source:
+            raise RelocateError("Choose a folder to move.")
+        normalized.append((drive, source))
+    kept_folders: list[tuple[str, str]] = []
+    for drive, source in normalized:
+        if any(
+            drive == other_drive and other != source and source.startswith(other + "/")
+            for other_drive, other in normalized
+        ):
+            continue
+        kept_folders.append((drive, source))
+
+    pairs: list[tuple[dict, str]] = []
+    seen: set[int] = set()
+    for drive, source in kept_folders:
+        name = source.rsplit("/", 1)[-1]
+        dest = f"{into_path}/{name}"
+        _check_nesting(source, dest, dest_drive == drive)
+        rows = _rows_under(drive, source)
+        if not rows:
+            raise RelocateError(f"Nothing is stored at {drive}/{source}.")
+        for row in rows:
+            file_id = int(row["id"])
+            if file_id in seen:
+                continue
+            seen.add(file_id)
+            pairs.append((row, _replace_prefix(row["file_path"], source, dest)))
+
+    for row in _rows_by_ids([int(i) for i in file_ids]):
+        file_id = int(row["id"])
+        if file_id in seen:
+            continue
+        if _covered_by_folder(row["drive_name"], row["file_path"], kept_folders):
+            continue
+        leaf = clean_name(row["file_path"].rsplit("/", 1)[-1])
+        new = f"{into_path}/{leaf}"
+        seen.add(file_id)
+        pairs.append((row, new))
+
+    if not pairs:
+        raise RelocateError("Nothing is stored at that path.")
+
+    old_paths = {
+        row["file_path"]
+        for row, _new in pairs
+        if row["drive_name"] == dest_drive
+    }
+    kept_pairs: list[tuple[dict, str]] = []
+    for row, new in pairs:
+        if row["drive_name"] == dest_drive and new == row["file_path"]:
+            continue
+        if new in old_paths and new != row["file_path"]:
+            raise RelocateError(
+                "That destination overlaps files included in this move. "
+                "Move one folder at a time."
+            )
+        kept_pairs.append((row, new))
+
+    plan = _pack_moves(dest_drive, kept_pairs)
+    plan.update({
+        "kind": "selection",
+        "into": into_path,
+        "file_ids": [int(i) for i in file_ids],
+        "folders": [[drive, path] for drive, path in folders],
+    })
+    return plan
+
+
 def plan_move_file(file_id: int, dest_drive: str, dest_path: str) -> dict:
     """Move one catalog row onto ``dest_drive`` at ``dest_path``."""
     dest = clean_catalog_path(dest_path)
@@ -510,6 +655,17 @@ def plan_from_payload(payload: dict) -> dict:
             int(payload.get("file_id") or 0),
             dest_drive,
             payload.get("dest_path") or "",
+        )
+    if kind == "selection":
+        folders = []
+        for item in payload.get("folders") or []:
+            if isinstance(item, (list, tuple)) and len(item) >= 2:
+                folders.append((str(item[0]), str(item[1])))
+        return plan_move_selection(
+            [int(i) for i in (payload.get("file_ids") or [])],
+            folders,
+            payload.get("into") or "",
+            dest_drive,
         )
     raise RelocateError("That move is not valid.")
 

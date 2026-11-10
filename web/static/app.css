@@ -1153,6 +1153,84 @@ html[data-settings-tab="danger"] #danger { display: block; }
     margin-top: 0.35rem;
 }
 .settings-pair > .restore-form { flex: 1 1 18rem; margin-top: 0; }
+.pick-all-row { margin: 0.15rem 0 0.45rem; }
+.pick-all-row .check {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    color: var(--muted);
+    font-size: 0.9rem;
+}
+input.pick,
+input.pick-all {
+    width: 1.15rem;
+    height: 1.15rem;
+    margin: 0;
+    accent-color: var(--accent);
+}
+.pick-label {
+    display: inline-flex;
+    align-items: center;
+    flex: none;
+}
+.files td.cell-title {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-start;
+    gap: 0.35rem 0.5rem;
+}
+.files td.cell-title .file-name { flex: 1 1 8rem; }
+.files td.cell-title .places { flex: 1 0 100%; }
+.files td.cell-title .pick-label { margin-top: 0.15rem; }
+.hit-list .pick-label,
+.folder-list .pick-label { align-self: center; }
+.photo-pick { position: relative; }
+.photo-check {
+    position: absolute;
+    z-index: 1;
+    top: 0.35rem;
+    left: 0.35rem;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 2rem;
+    height: 2rem;
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+}
+.pick-bar {
+    position: fixed;
+    z-index: 40;
+    left: 50%;
+    bottom: max(0.85rem, env(safe-area-inset-bottom));
+    transform: translateX(-50%);
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: center;
+    gap: 0.45rem;
+    width: max-content;
+    max-width: calc(100vw - 1.5rem);
+    margin: 0;
+    padding: 0.55rem 0.7rem;
+    background: var(--card);
+    color: var(--ink);
+    border: 1px solid var(--line);
+    border-radius: 16px;
+    box-shadow: 0 10px 30px rgba(28, 25, 21, 0.18);
+}
+.pick-bar[hidden] { display: none !important; }
+.pick-count {
+    margin: 0;
+    padding: 0 0.35rem;
+    font-weight: 700;
+}
+.pick-bar button { padding: 0.45rem 0.8rem; }
+body.picking .wrap {
+    padding-bottom: calc(7rem + env(safe-area-inset-bottom));
+}
+
 .settings-split {
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(min(100%, 22rem), 1fr));
