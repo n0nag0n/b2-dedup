@@ -14,6 +14,33 @@ def test_fts_query_splits_filename_punctuation():
     assert fts_query("foo*") == "foo*"
 
 
+def test_name_matcher_finds_a_word_inside_underscores():
+    """The reported videos use underscores, not spaces.
+
+    FTS indexes each word. The name check used to keep the whole
+    ``2004_katie_...`` string as one token and drop the hit.
+    """
+    audition = _name_matcher(fts_query("audition"))
+    assert audition("2004_katie_nauvoo_audition_reading.mp4")
+    assert audition("2004_katie_nauvoo_audition_song.mp4")
+    assert audition("2004_katie_audition.mp4")
+    assert not audition("library")
+    assert not audition("2004_katie_nauvoo_reading.mp4")
+
+    katie = _name_matcher(fts_query("katie audition"))
+    assert katie("2004_katie_nauvoo_audition_reading.mp4")
+    assert not katie("audition_only.mp4")
+
+    # IMG_8730 is one FTS bareword and a phrase of two tokens, in order.
+    camera = _name_matcher(fts_query("IMG_8730"))
+    assert camera("IMG_8730.JPG")
+    assert camera("IMG_8730_extra.JPG")
+    assert camera("pre_IMG_8730.JPG")
+    assert not camera("8730_IMG.JPG")
+    assert not camera("IMG_other_8730.JPG")
+    assert not camera("IMG8730.JPG")
+
+
 def test_fts_query_keeps_wildcard_and_drops_punctuation():
     assert fts_query("dice*.png") == "dice* png*"
     assert fts_query("*.png") == "png*"
@@ -129,6 +156,67 @@ def test_search_path_limits_hits_to_that_folder():
     narrow = search_files("dice", path="this/folder/does/not/exist", per_page=5)
     assert narrow["total"] == 0
     assert narrow["folder_total"] == 0
+
+
+def test_search_returns_underscored_names_from_the_catalog(tmp_path, monkeypatch):
+    db_path = tmp_path / "b2_dedup.db"
+    monkeypatch.setattr("core.db.DB_PATH", db_path)
+    from core.db import connect, init_db
+    from core.ingest import insert_file_record
+
+    init_db()
+    meta = {
+        "mtime": "2026-11-01T21:10:00",
+        "ctime": None,
+        "atime": None,
+        "mime_type": "video/mp4",
+        "file_type": "Video",
+    }
+    rows = [
+        (
+            "a" * 64,
+            "Katie Family Home Videos/library/2004_katie_nauvoo_audition_reading.mp4",
+        ),
+        (
+            "b" * 64,
+            "Katie Family Home Videos/library/2004_katie_nauvoo_audition_song.mp4",
+        ),
+        (
+            "c" * 64,
+            "Katie Family Home Videos/library/2004_katie_nauvoo_talk.mp4",
+        ),
+    ]
+    conn = connect()
+    try:
+        cur = conn.cursor()
+        for digest, path in rows:
+            insert_file_record(
+                cur, digest, 1024, "Scratch", path, f"Scratch/{path}", 1, meta,
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+    found = search_files("audition", drive="Scratch", per_page=20)
+    assert [item["name"] for item in found["files"]] == [
+        "2004_katie_nauvoo_audition_reading.mp4",
+        "2004_katie_nauvoo_audition_song.mp4",
+    ]
+    assert found["total"] == 2
+    reading = search_files("reading", drive="Scratch", per_page=20)
+    assert [item["name"] for item in reading["files"]] == [
+        "2004_katie_nauvoo_audition_reading.mp4",
+    ]
+
+    from fastapi.testclient import TestClient
+
+    from web.app import app
+
+    page = TestClient(app).get("/search", params={"q": "audition", "drive": "Scratch"})
+    assert page.status_code == 200
+    assert "2004_katie_nauvoo_audition_reading.mp4" in page.text
+    assert "2004_katie_nauvoo_audition_song.mp4" in page.text
+    assert "2004_katie_nauvoo_talk.mp4" not in page.text
 
 
 def test_search_drive_walk_matches_file_rows():

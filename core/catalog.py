@@ -153,11 +153,14 @@ def get_file_types() -> list[str]:
     return [r["file_type"] for r in rows]
 
 
-# unicode61 indexes letters, numbers, and underscore. The query parser rejects
-# other characters as syntax ("." in dice1.png, "-" in file-name), even though
-# the index stores them as word breaks.
+# An FTS5 bareword may contain "_", but unicode61 then splits that bareword
+# on underscore (it is punctuation, not a letter). "." and "-" are rejected
+# by the query parser outright, even though the index stores them as breaks.
+# Name checks have to split on underscore too: otherwise
+# 2004_katie_nauvoo_audition_reading.mp4 is one token, FTS finds "audition",
+# and the result is discarded.
 _FTS_TOKEN_RE = re.compile(r'"[^"]*"\*?|\w+\*?|\*')
-_NAME_TOKEN_RE = re.compile(r"\w+")
+_NAME_TOKEN_RE = re.compile(r"[^\W_]+")
 _FTS_OPERATORS = {"AND", "OR", "NOT", "NEAR"}
 # Errors raised by the FTS5 query parser (not by SQLite itself).
 _FTS_QUERY_ERRORS = (
@@ -170,9 +173,11 @@ _FTS_QUERY_ERRORS = (
 def fts_query(raw: str) -> str:
     """Turn free-text input into a valid FTS5 MATCH expression.
 
-    unicode61 stores letters, numbers, and underscore as tokens; every other
-    character is a word break. Rebuild the expression from those tokens so
-    punctuation (the "." in ``dice*.png``, the "-" in ``file-name``) is never
+    unicode61 keeps letters and numbers, and splits on everything else,
+    including underscore. The query parser still accepts underscore inside a
+    bareword and then tokenizes it into a phrase (``IMG_8730*`` is IMG
+    followed by a 8730 prefix). Punctuation the parser rejects (the "." in
+    ``dice*.png``, the "-" in ``file-name``) is removed here so it is never
     parsed as FTS syntax. Quoted phrases and explicit ``*`` prefixes survive,
     boolean operators are kept only between terms, and the last bare term gets
     an implicit prefix ``*``.
@@ -218,38 +223,44 @@ def _term_needle(term: str) -> str:
     return words[0] if words else ""
 
 
+def _phrase_in_tokens(words: list[str], tokens: list[str], *, prefix: bool) -> bool:
+    """True when ``words`` sit together in ``tokens``.
+
+    A trailing ``*`` applies only to the last word, matching an FTS prefix
+    phrase. ``IMG_8730*`` is therefore IMG followed by a token that starts
+    with 8730, in that order.
+    """
+    if not words or len(words) > len(tokens):
+        return False
+    if prefix:
+        head, last = words[:-1], words[-1]
+        span = len(words)
+        for i in range(len(tokens) - span + 1):
+            if tokens[i:i + len(head)] == head and tokens[i + len(head)].startswith(last):
+                return True
+        return False
+    span = len(words)
+    return any(tokens[i:i + span] == words for i in range(len(tokens) - span + 1))
+
+
 def _term_in_tokens(term: str, tokens: list[str]) -> bool:
     prefix = term.endswith("*")
     body = term[:-1] if prefix else term
     if body.startswith('"'):
-        phrase = body[1:-1] if body.endswith('"') else body[1:]
-        words = _NAME_TOKEN_RE.findall(phrase.lower())
-        if not words:
-            return False
-        if prefix:
-            head, last = words[:-1], words[-1]
-            span = len(words)
-            for i in range(len(tokens) - span + 1):
-                if tokens[i:i + len(head)] == head and tokens[i + len(head)].startswith(last):
-                    return True
-            return False
-        span = len(words)
-        return any(tokens[i:i + span] == words for i in range(len(tokens) - span + 1))
-    word = body.lower()
-    if not word:
-        return False
-    if prefix:
-        return any(tok.startswith(word) for tok in tokens)
-    return word in tokens
+        body = body[1:-1] if body.endswith('"') else body[1:]
+    return _phrase_in_tokens(_NAME_TOKEN_RE.findall(body.lower()), tokens, prefix=prefix)
 
 
 def _name_matcher(expression: str):
     """Match one path segment the way the FTS expression matches that name.
 
     Terms are AND within a clause and OR across clauses, same as the
-    expression ``fts_query`` builds. Matching is against the segment's own
-    tokens, so a folder named Backup matches ``backup`` and a file that
-    merely lives inside that folder does not.
+    expression ``fts_query`` builds. Tokens are letters and numbers, so
+    underscore is a break: ``audition`` matches
+    ``2004_katie_nauvoo_audition_reading.mp4``. A bareword that itself
+    contains underscores is a phrase, same as unicode61. A folder named
+    Backup matches ``backup``; a file that merely lives inside that folder
+    does not.
     """
     parts = _FTS_TOKEN_RE.findall(expression or "")
     clauses: list[list[tuple[str, bool]]] = [[]]
