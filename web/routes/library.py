@@ -8,6 +8,7 @@ from fastapi import APIRouter, Query
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 
 from core.paths import THUMBS_DIR
+from core.thumbs import ensure_thumb
 
 router = APIRouter()
 _HASH = re.compile(r"^[0-9a-f]{64}$")
@@ -78,8 +79,14 @@ def moment_page(
 @router.get("/thumbs/{file_hash}")
 def thumb_file(file_hash: str):
     if not _HASH.fullmatch(file_hash):
-        return HTMLResponse("Not found", status_code=404)
+        return HTMLResponse("Not found", status_code=404, headers={"Cache-Control": "private, no-store"})
     path = THUMBS_DIR / file_hash[:2] / f"{file_hash}.jpg"
     if not path.is_file():
-        return HTMLResponse("Not found", status_code=404)
+        try:
+            built = ensure_thumb(file_hash)
+        except Exception:  # noqa: BLE001 - credentials, network, unreadable image
+            built = None
+        path = built if built is not None else path
+    if not path.is_file():
+        return HTMLResponse("Not found", status_code=404, headers={"Cache-Control": "private, no-store"})
     return FileResponse(path, media_type="image/jpeg", headers={"Cache-Control": "public, max-age=86400"})

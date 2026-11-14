@@ -25,8 +25,8 @@
     {% for item in neighbors.around %}
     <li>
         <a href="/file/{{ item.id }}{{ sort_query }}" title="{{ item.name }}" {% if item.current %}aria-current="page"{% endif %}>
-            {% if item.thumb_url %}
-            <img src="{{ item.thumb_url }}" alt="" width="80" height="80">
+            {% if item.thumb_src %}
+            <img src="{{ item.thumb_src }}" alt="" width="80" height="80" loading="lazy" data-name="{{ item.name }}">
             {% else %}
             <span class="thumb-ph">{% if item.file_type == 'Video' %}▶{% elif item.file_type %}{{ item.file_type }}{% else %}File{% endif %}</span>
             {% endif %}
@@ -39,6 +39,14 @@
 (function () {
     var nav = document.getElementById("file-nav");
     if (!nav) return;
+    document.querySelectorAll(".neighbor-strip img").forEach(function (img) {
+        img.addEventListener("error", function () {
+            var ph = document.createElement("span");
+            ph.className = "thumb-ph";
+            ph.textContent = (img.getAttribute("data-name") || "Image").slice(0, 12);
+            img.replaceWith(ph);
+        });
+    });
     var current = document.querySelector(".neighbor-strip [aria-current='page']");
     if (current && current.scrollIntoView) {
         current.scrollIntoView({inline: "center", block: "nearest"});

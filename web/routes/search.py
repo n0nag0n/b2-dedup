@@ -35,7 +35,7 @@ from core.library import (
     list_months,
     list_years,
 )
-from core.thumbs import thumb_url
+from core.thumbs import gallery_thumb_src, thumb_url
 from web.templating import page_vars, session_key, set_notice, templates
 
 router = APIRouter()
@@ -145,6 +145,7 @@ def search_page(
     folder_other = 0
     photos_href = ""
     list_href = ""
+    thumbs_missing = 0
 
     if view == "moment":
         mode = "moment"
@@ -239,6 +240,9 @@ def search_page(
         if folder_layout == "photos":
             for item in folder_files["files"]:
                 item["thumb_url"] = thumb_url(item.get("hash") or "")
+                item["thumb_src"] = gallery_thumb_src(item.get("hash") or "", item.get("file_type"))
+                if item["thumb_src"] and not item["thumb_url"]:
+                    thumbs_missing += 1
         _mark_in_set(request, folder_files["files"])
 
     filters = _kept_query(
@@ -291,6 +295,7 @@ def search_page(
             folder_other=folder_other,
             photos_href=photos_href,
             list_href=list_href,
+            thumbs_missing=thumbs_missing,
             form_view="moments" if view in {"moments", "moment"} else "files",
             mode=mode,
             results=results,

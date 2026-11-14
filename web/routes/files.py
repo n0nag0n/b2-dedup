@@ -24,7 +24,7 @@ from core.preview import (
     preview_etag,
     preview_media_type,
 )
-from core.thumbs import thumb_url
+from core.thumbs import gallery_thumb_src, thumb_url
 from web.templating import page_vars, session_key, templates
 
 router = APIRouter()
@@ -111,6 +111,7 @@ def file_page(request: Request, file_id: int):
     sort = neighbors["sort"]
     for item in neighbors["around"]:
         item["thumb_url"] = thumb_url(item.get("hash") or "")
+        item["thumb_src"] = gallery_thumb_src(item.get("hash") or "", item.get("file_type"))
     kept = {"sort": sort} if sort != "path" else {}
     if media:
         kept["layout"] = "photos"

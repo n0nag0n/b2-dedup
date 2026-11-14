@@ -7,6 +7,7 @@ from PIL import Image
 from core.db import connect
 from core.ingest import insert_file_record
 from core.thumbs import (
+    ensure_thumb,
     generate_thumb_from_bytes,
     run_thumbs,
     thumb_exists,
@@ -99,3 +100,100 @@ def test_thumbs_job_uses_catalog_originals(tmp_path, monkeypatch):
     assert stats["created"] == 1
     assert thumb_exists(file_hash)
     assert thumbs_pending() == []
+
+
+def _image_meta():
+    return {
+        "mtime": "2016-07-04T12:00:00+00:00",
+        "ctime": None,
+        "atime": None,
+        "mime_type": "image/jpeg",
+        "file_type": "Image",
+    }
+
+
+def test_ensure_thumb_uses_the_original_when_the_gallery_row_is_a_copy(tmp_path, monkeypatch):
+    _isolate(tmp_path, monkeypatch)
+    file_hash = "ab" * 32
+    jpeg = _jpeg("red")
+    conn = connect()
+    try:
+        cur = conn.cursor()
+        insert_file_record(
+            cur, file_hash, len(jpeg), "OldDrive", "trip/IMG_1528.JPG", "", 0, _image_meta(),
+        )
+        insert_file_record(
+            cur, file_hash, len(jpeg), "BigBertha", "trip/IMG_1528.JPG",
+            "BigBertha/trip/IMG_1528.JPG", 1, _image_meta(),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    downloads = []
+
+    class RecordingB2(FakeB2):
+        def download_file_content(self, remote_path: str) -> bytes:
+            downloads.append(remote_path)
+            return super().download_file_content(remote_path)
+
+    path = ensure_thumb(file_hash, b2=RecordingB2({"BigBertha/trip/IMG_1528.JPG": jpeg}))
+    assert path is not None and path.is_file()
+    assert downloads == ["BigBertha/trip/IMG_1528.JPG"]
+    assert ensure_thumb(file_hash, b2=RecordingB2({})) == path
+    assert downloads == ["BigBertha/trip/IMG_1528.JPG"]
+
+
+def test_ensure_thumb_does_not_retry_a_failed_hash(tmp_path, monkeypatch):
+    _isolate(tmp_path, monkeypatch)
+    file_hash = "cd" * 32
+    conn = connect()
+    try:
+        insert_file_record(
+            conn.cursor(), file_hash, 10, "Drive", "trip/a.jpg", "Drive/trip/a.jpg", 1, _image_meta(),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    class Boom:
+        def __init__(self):
+            self.calls = 0
+
+        def download_file_content(self, remote_path: str) -> bytes:
+            self.calls += 1
+            raise RuntimeError("b2 down")
+
+    boom = Boom()
+    assert ensure_thumb(file_hash, b2=boom) is None
+    assert boom.calls == 1
+    assert ensure_thumb(file_hash, b2=boom) is None
+    assert boom.calls == 1
+
+
+def test_thumb_route_builds_a_missing_preview(tmp_path, monkeypatch):
+    _isolate(tmp_path, monkeypatch)
+    file_hash = "ef" * 32
+    jpeg = _jpeg("blue")
+    conn = connect()
+    try:
+        insert_file_record(
+            conn.cursor(), file_hash, len(jpeg), "Drive", "trip/a.jpg",
+            "Drive/trip/a.jpg", 1, _image_meta(),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    monkeypatch.setattr(
+        "core.download.shared_manager",
+        lambda bucket=None: FakeB2({"Drive/trip/a.jpg": jpeg}),
+    )
+    from fastapi.testclient import TestClient
+
+    from web.app import app
+
+    response = TestClient(app).get(f"/thumbs/{file_hash}")
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("image/jpeg")
+    assert response.content[:2] == b"\xff\xd8"
+    assert thumb_exists(file_hash)

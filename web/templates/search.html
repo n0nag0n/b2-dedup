@@ -234,8 +234,8 @@
             <input class="pick" type="checkbox" name="file_id" value="{{ f.id }}" form="pick-form" data-pick-group="folder-files" aria-label="Select {{ f.name }}">
         </label>
         <a href="/file/{{ f.id }}{% if sort != 'path' %}?sort={{ sort | urlencode }}{% endif %}" title="{{ f.name }}">
-            {% if f.thumb_url %}
-            <img src="{{ f.thumb_url }}" alt="" width="400" height="400">
+            {% if f.thumb_src %}
+            <img src="{{ f.thumb_src }}" alt="" width="400" height="400" loading="lazy" data-name="{{ f.name }}">
             {% else %}
             <span class="thumb-ph">
                 {% if f.file_type == 'Video' %}▶ Video{% elif f.file_type %}<span class="badge">{{ f.file_type }}</span>{% endif %}
@@ -247,6 +247,19 @@
     </li>
     {% endfor %}
 </ul>
+{% if thumbs_missing %}
+<p class="hint">Previews are saved as they load. The first look at a folder fetches each photo from B2, so the pictures fill in one at a time.</p>
+{% endif %}
+<script>
+document.querySelectorAll(".photo-grid img").forEach(function (img) {
+    img.addEventListener("error", function () {
+        var ph = document.createElement("span");
+        ph.className = "thumb-ph";
+        ph.textContent = (img.getAttribute("data-name") || "Image").slice(0, 22);
+        img.replaceWith(ph);
+    });
+});
+</script>
 {% else %}
 {% with files=folder_files.files, show_drive=false, pick_group='folder-files' %}
 {% include "_file_table.html" %}

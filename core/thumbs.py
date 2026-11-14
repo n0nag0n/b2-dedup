@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import re
+import threading
 from datetime import datetime, timezone
 from io import BytesIO
 from pathlib import Path
@@ -68,6 +69,24 @@ def thumb_url(file_hash: str) -> str | None:
     if file_hash and HASH_RE.fullmatch(file_hash) and thumb_exists(file_hash):
         return f"/thumbs/{file_hash}"
     return None
+
+
+def gallery_thumb_src(file_hash: str, file_type: str | None = None) -> str | None:
+    """Image URL for the folder grid.
+
+    The JPEG may not exist yet. ``GET /thumbs/{hash}`` builds it on that request.
+    """
+    if (file_type or "") != "Image":
+        return None
+    if file_hash and HASH_RE.fullmatch(file_hash):
+        return f"/thumbs/{file_hash}"
+    return None
+
+
+# A folder grid asks for every photo at once. Keep a few B2 downloads in flight.
+_thumb_slots = threading.Semaphore(4)
+_inflight_lock = threading.Lock()
+_inflight: dict[str, threading.Event] = {}
 
 
 def _rgb(im):
@@ -207,6 +226,92 @@ def generate_thumb_from_bytes(file_hash: str, data: bytes) -> dict:
 def generate_thumb_from_path(file_hash: str, local_path: Path) -> dict:
     data = Path(local_path).read_bytes()
     return generate_thumb_from_bytes(file_hash, data)
+
+
+def _thumb_source(file_hash: str) -> dict | None:
+    """A catalog row whose bytes can build this hash's thumbnail."""
+    conn = connect(readonly=True)
+    try:
+        row = conn.execute(
+            "SELECT id, hash, upload_path, drive_name, file_path, size, "
+            "mime_type, file_mtime, is_original "
+            "FROM files WHERE hash = ? "
+            "ORDER BY (upload_path IS NOT NULL AND upload_path != '') DESC, "
+            "is_original DESC, id LIMIT 1",
+            (file_hash,),
+        ).fetchone()
+        status = None
+        if row:
+            status = conn.execute(
+                "SELECT status FROM file_features WHERE file_id = ? AND feature = ?",
+                (int(row["id"]), FEATURE),
+            ).fetchone()
+    finally:
+        conn.close()
+    if not row:
+        return None
+    if status and status["status"] == "error":
+        return None
+    rec = {
+        "id": int(row["id"]),
+        "hash": row["hash"],
+        "upload_path": (row["upload_path"] or "").strip(),
+        "drive_name": row["drive_name"],
+        "file_path": row["file_path"],
+        "size": int(row["size"] or 0),
+        "mime_type": row["mime_type"],
+        "file_mtime": row["file_mtime"],
+    }
+    if not rec["upload_path"] and rec["drive_name"] and rec["file_path"]:
+        from core.b2 import sanitize_b2_path
+
+        rec["upload_path"] = sanitize_b2_path(f"{rec['drive_name']}/{rec['file_path']}")
+    if not rec["upload_path"]:
+        return None
+    return rec
+
+
+def ensure_thumb(file_hash: str, b2=None) -> Path | None:
+    """Return the thumbnail path, creating it from B2 when it is missing.
+
+    A previous failure is left alone so a gallery does not retry it on every paint.
+    Callers that pass ``b2`` are tests; the web route lets this open the shared client.
+    """
+    if not file_hash or not HASH_RE.fullmatch(file_hash):
+        return None
+    path = thumb_path(file_hash)
+    if path.is_file():
+        return path
+    with _inflight_lock:
+        waiting = _inflight.get(file_hash)
+        if waiting is None:
+            waiting = threading.Event()
+            _inflight[file_hash] = waiting
+            owner = True
+        else:
+            owner = False
+    if not owner:
+        waiting.wait(timeout=180)
+        return path if path.is_file() else None
+    try:
+        with _thumb_slots:
+            if path.is_file():
+                return path
+            rec = _thumb_source(file_hash)
+            if not rec:
+                return None
+            if b2 is None:
+                from core.download import shared_manager
+
+                b2 = shared_manager()
+            status = process_one(b2, rec)
+        if status in {"created", "exists"} and path.is_file():
+            return path
+        return None
+    finally:
+        with _inflight_lock:
+            _inflight.pop(file_hash, None)
+        waiting.set()
 
 
 def process_one(b2, rec: dict) -> str:

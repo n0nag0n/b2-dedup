@@ -115,6 +115,8 @@ def test_folder_page_uses_a_photo_grid_for_images_and_videos(tmp_path, monkeypat
     page = client.get("/search", params={"drive": "Camera", "path": "trip"})
     assert page.status_code == 200
     assert 'class="photo-grid"' in page.text
+    assert 'src="/thumbs/' + ("a" * 64) + '"' in page.text
+    assert "fetches each photo from B2" in page.text
     assert "▶ Video" in page.text
     assert "3 photos and 1 video" in page.text
     assert "1 other file stays in the list" in page.text
