@@ -1,9 +1,11 @@
 """GET /file/{id} — inspector, inline preview, and other copies."""
+from urllib.parse import urlencode
+
 from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse, PlainTextResponse, Response, StreamingResponse
 
 from core import restore_set
-from core.catalog import get_copies, get_file
+from core.catalog import folder_neighbors, get_copies, get_file
 from core.config import get_bucket_name
 from core.download import (
     content_disposition,
@@ -98,6 +100,28 @@ def file_page(request: Request, file_id: int):
     }
     rec["thumb_url"] = thumb_url(rec.get("hash") or "")
     preview = describe_preview(rec, thumb_available=bool(rec["thumb_url"]))
+    media = rec.get("file_type") in {"Image", "Video"}
+    neighbors = folder_neighbors(
+        rec["drive_name"],
+        rec["file_path"],
+        rec["id"],
+        sort=(request.query_params.get("sort") or "path"),
+        media_only=media,
+    )
+    sort = neighbors["sort"]
+    for item in neighbors["around"]:
+        item["thumb_url"] = thumb_url(item.get("hash") or "")
+    kept = {"sort": sort} if sort != "path" else {}
+    if media:
+        kept["layout"] = "photos"
+    folder_href = "/search?" + urlencode(
+        {
+            "drive": rec["drive_name"],
+            "path": rec.get("parent_path") or "",
+            **kept,
+        }
+    )
+    sort_query = ("?" + urlencode({"sort": sort})) if sort != "path" else ""
     text_preview = ""
     text_error = ""
     if preview["kind"] == "text":
@@ -117,6 +141,9 @@ def file_page(request: Request, file_id: int):
             text_preview=text_preview,
             text_error=text_error,
             in_set=restore_set.contains(session_key(request), rec["id"]),
+            neighbors=neighbors,
+            folder_href=folder_href,
+            sort_query=sort_query,
         ),
     )
 

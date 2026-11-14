@@ -6,6 +6,56 @@
 </p>
 <h1>{{ file.name }}</h1>
 
+{% if neighbors.total > 1 %}
+<nav class="file-nav" id="file-nav" aria-label="Files in this folder" data-prev="{% if neighbors.prev %}/file/{{ neighbors.prev.id }}{{ sort_query }}{% endif %}" data-next="{% if neighbors.next %}/file/{{ neighbors.next.id }}{{ sort_query }}{% endif %}">
+    {% if neighbors.prev %}
+    <a class="button secondary" href="/file/{{ neighbors.prev.id }}{{ sort_query }}" rel="prev">Previous</a>
+    {% else %}
+    <span class="button secondary is-disabled" aria-disabled="true">Previous</span>
+    {% endif %}
+    <span class="file-nav-pos">{{ neighbors.index }} of {{ neighbors.total_fmt }} {{ neighbors.noun }}</span>
+    {% if neighbors.next %}
+    <a class="button secondary" href="/file/{{ neighbors.next.id }}{{ sort_query }}" rel="next">Next</a>
+    {% else %}
+    <span class="button secondary is-disabled" aria-disabled="true">Next</span>
+    {% endif %}
+    <a href="{{ folder_href }}">{% if neighbors.media %}Photos in this folder{% else %}This folder{% endif %}</a>
+</nav>
+<ul class="neighbor-strip">
+    {% for item in neighbors.around %}
+    <li>
+        <a href="/file/{{ item.id }}{{ sort_query }}" title="{{ item.name }}" {% if item.current %}aria-current="page"{% endif %}>
+            {% if item.thumb_url %}
+            <img src="{{ item.thumb_url }}" alt="" width="80" height="80">
+            {% else %}
+            <span class="thumb-ph">{% if item.file_type == 'Video' %}▶{% elif item.file_type %}{{ item.file_type }}{% else %}File{% endif %}</span>
+            {% endif %}
+        </a>
+    </li>
+    {% endfor %}
+</ul>
+<p class="hint">Left and right arrows move through this folder.</p>
+<script>
+(function () {
+    var nav = document.getElementById("file-nav");
+    if (!nav) return;
+    var current = document.querySelector(".neighbor-strip [aria-current='page']");
+    if (current && current.scrollIntoView) {
+        current.scrollIntoView({inline: "center", block: "nearest"});
+    }
+    document.addEventListener("keydown", function (event) {
+        if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
+        var tag = (event.target && event.target.tagName || "").toLowerCase();
+        if (tag === "input" || tag === "textarea" || tag === "select" || (event.target && event.target.isContentEditable)) return;
+        var href = event.key === "ArrowLeft" ? nav.dataset.prev : event.key === "ArrowRight" ? nav.dataset.next : "";
+        if (!href) return;
+        event.preventDefault();
+        window.location.href = href;
+    });
+})();
+</script>
+{% endif %}
+
 {% if preview.kind == "image" %}
 <figure class="file-preview">
     <img src="/preview/{{ file.id }}" alt="{{ file.name }}">

@@ -528,7 +528,8 @@ button, .search button {
 .volume-card { height: auto; }
 .volume-card .actions { margin-bottom: 0; }
 
-a.button {
+a.button,
+span.button {
     display: inline-block;
     background: var(--accent);
     color: var(--accent-ink);
@@ -610,6 +611,77 @@ a.button:hover { text-decoration: none; }
 }
 .file-name { font-weight: 600; overflow-wrap: anywhere; }
 .results-heading { margin: 1.35rem 0 0.35rem; font-size: 1.05rem; }
+.results-tools {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.5rem 1rem;
+    margin-top: 1.35rem;
+}
+.results-tools .results-heading { margin: 0; }
+.layout-toggle {
+    display: inline-flex;
+    border: 1px solid var(--line);
+    border-radius: 999px;
+    overflow: hidden;
+}
+.layout-toggle a {
+    display: inline-flex;
+    align-items: center;
+    min-height: 2.25rem;
+    padding: 0.2rem 0.85rem;
+    text-decoration: none;
+    color: inherit;
+}
+.layout-toggle a[aria-current="page"] {
+    background: var(--accent);
+    color: var(--accent-ink);
+}
+.file-nav {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.5rem 0.75rem;
+    margin: 0 0 0.75rem;
+}
+.file-nav-pos { color: var(--muted); }
+.button.is-disabled,
+a.button.is-disabled,
+span.button.is-disabled {
+    opacity: 0.45;
+    pointer-events: none;
+}
+.neighbor-strip {
+    list-style: none;
+    display: flex;
+    gap: 0.4rem;
+    overflow-x: auto;
+    margin: 0 0 0.35rem;
+    padding: 0.2rem 0.15rem 0.45rem;
+}
+.neighbor-strip a {
+    flex: 0 0 4.75rem;
+    width: 4.75rem;
+    display: block;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    overflow: hidden;
+    background: var(--chip);
+    text-decoration: none;
+}
+.neighbor-strip img,
+.neighbor-strip .thumb-ph {
+    display: flex;
+    width: 100%;
+    aspect-ratio: 1;
+    object-fit: cover;
+}
+.neighbor-strip .thumb-ph { font-size: 0.72rem; padding: 0.25rem; }
+.neighbor-strip a[aria-current="page"] {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+}
 .hit-list {
     list-style: none;
     padding: 0;
@@ -731,7 +803,8 @@ a.icon-btn:hover {
     text-decoration: none;
 }
 button.secondary,
-a.button.secondary {
+a.button.secondary,
+span.button.secondary {
     background: transparent;
     color: var(--accent);
     border: 1px solid var(--accent);
@@ -921,7 +994,7 @@ details.hint summary { cursor: pointer; }
 
 .login-tools { margin: 0 0 1rem; }
 
-button, a.button, .search button {
+button, a.button, span.button, .search button {
     max-width: 100%;
 }
 

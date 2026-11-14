@@ -784,6 +784,120 @@ def list_subdirs(
     return {"dirs": dirs, "next_seek": next_seek}
 
 
+def visual_label(images: int, videos: int) -> str:
+    """'12 photos and 3 videos' for a folder gallery heading."""
+    images = int(images or 0)
+    videos = int(videos or 0)
+    parts = []
+    if images:
+        parts.append(f"{images:,} photo" + ("" if images == 1 else "s"))
+    if videos:
+        parts.append(f"{videos:,} video" + ("" if videos == 1 else "s"))
+    if len(parts) == 2:
+        return f"{parts[0]} and {parts[1]}"
+    return parts[0] if parts else "0 photos"
+
+
+def choose_folder_layout(
+    requested: str,
+    *,
+    total: int,
+    images: int,
+    videos: int,
+    file_type: str = "",
+) -> str:
+    """Pick photos or list. An explicit request wins.
+
+    A folder opens as a gallery when it is already filtered to images or
+    videos, or when those files are at least half the folder and there are
+    enough of them to scan.
+    """
+    choice = (requested or "").strip().lower()
+    if choice in {"photos", "list"}:
+        return choice
+    if file_type in {"Image", "Video"}:
+        return "photos"
+    visual = int(images or 0) + int(videos or 0)
+    if visual >= 4 and total and visual * 2 >= int(total):
+        return "photos"
+    return "list"
+
+
+def _folder_where(
+    drive: str,
+    prefix: str,
+    *,
+    hide_hidden: bool = True,
+    file_type: str = "",
+    origin: str = "",
+    ext: str = "",
+    year: str = "",
+    month: str = "",
+    media_only: bool = False,
+) -> tuple[str, list, str]:
+    """Direct children of one folder. ``prefix`` is returned with a trailing slash."""
+    if prefix and not prefix.endswith("/"):
+        prefix += "/"
+    conditions = ["f.drive_name = ?", "f.file_path LIKE ?", "f.file_path NOT LIKE ?"]
+    params: list = [drive, f"{prefix}%", f"{prefix}%/%"]
+    if hide_hidden:
+        conditions.append("f.searchable = 1")
+    if media_only:
+        conditions.append("f.file_type IN ('Image', 'Video')")
+    narrow_sql, narrow_params = _narrow_conditions(
+        file_type=file_type, origin=origin, ext=ext, year=year, month=month
+    )
+    conditions.extend(narrow_sql)
+    params.extend(narrow_params)
+    return " WHERE " + " AND ".join(conditions), params, prefix
+
+
+def _folder_counts(conn, where: str, params: list) -> tuple[int, int, int]:
+    row = conn.execute(
+        "SELECT COUNT(*) AS total, "
+        "SUM(CASE WHEN f.file_type = 'Image' THEN 1 ELSE 0 END) AS images, "
+        "SUM(CASE WHEN f.file_type = 'Video' THEN 1 ELSE 0 END) AS videos "
+        f"FROM files f{where}",
+        params,
+    ).fetchone()
+    return int(row["total"] or 0), int(row["images"] or 0), int(row["videos"] or 0)
+
+
+def folder_composition(
+    drive: str,
+    prefix: str,
+    *,
+    hide_hidden: bool = True,
+    file_type: str = "",
+    origin: str = "",
+    ext: str = "",
+    year: str = "",
+    month: str = "",
+) -> dict:
+    """How many direct children are images or videos, before a gallery filter."""
+    where, params, _prefix = _folder_where(
+        drive,
+        prefix,
+        hide_hidden=hide_hidden,
+        file_type=file_type,
+        origin=origin,
+        ext=ext,
+        year=year,
+        month=month,
+    )
+    conn = connect(readonly=True)
+    try:
+        total, images, videos = _folder_counts(conn, where, params)
+    finally:
+        conn.close()
+    return {
+        "total": total,
+        "images": images,
+        "videos": videos,
+        "visual_label": visual_label(images, videos),
+    }
+
+
 def list_folder_files(
     drive: str,
     prefix: str,
@@ -797,25 +911,25 @@ def list_folder_files(
     sort: str = "path",
     page: int = 1,
     per_page: int = ROWS_PER_PAGE,
+    media_only: bool = False,
 ) -> dict:
-    if prefix and not prefix.endswith("/"):
-        prefix += "/"
     page = max(1, int(page or 1))
-    conditions = ["f.drive_name = ?", "f.file_path LIKE ?", "f.file_path NOT LIKE ?"]
-    params: list = [drive, f"{prefix}%", f"{prefix}%/%"]
-    if hide_hidden:
-        conditions.append("f.searchable = 1")
-    narrow_sql, narrow_params = _narrow_conditions(
-        file_type=file_type, origin=origin, ext=ext, year=year, month=month
+    where, params, prefix = _folder_where(
+        drive,
+        prefix,
+        hide_hidden=hide_hidden,
+        file_type=file_type,
+        origin=origin,
+        ext=ext,
+        year=year,
+        month=month,
+        media_only=media_only,
     )
-    conditions.extend(narrow_sql)
-    params.extend(narrow_params)
-    where = " WHERE " + " AND ".join(conditions)
     order = _FOLDER_ORDERS.get(sort, _FOLDER_ORDERS["path"])
 
     conn = connect(readonly=True)
     try:
-        total = conn.execute(f"SELECT COUNT(*) FROM files f{where}", params).fetchone()[0]
+        total, images, videos = _folder_counts(conn, where, params)
         offset = (page - 1) * per_page
         rows = conn.execute(
             "SELECT f.id, f.hash, f.drive_name, f.file_path, f.size, f.is_original, "
@@ -835,12 +949,127 @@ def list_folder_files(
 
     pages = max(1, (total + per_page - 1) // per_page) if total else 1
     return {
-        "total": int(total or 0),
-        "total_fmt": f"{int(total or 0):,}",
+        "total": total,
+        "total_fmt": f"{total:,}",
+        "images": images,
+        "videos": videos,
+        "visual_label": visual_label(images, videos),
         "page": page,
         "pages": pages,
         "has_more": page < pages,
         "files": files,
+    }
+
+
+def _empty_neighbors(sort: str, media: bool) -> dict:
+    return {
+        "total": 0,
+        "total_fmt": "0",
+        "index": 0,
+        "noun": "files",
+        "media": media,
+        "sort": sort,
+        "images": 0,
+        "videos": 0,
+        "prev": None,
+        "next": None,
+        "around": [],
+    }
+
+
+def folder_neighbors(
+    drive: str,
+    file_path: str,
+    file_id: int,
+    *,
+    sort: str = "path",
+    hide_hidden: bool = True,
+    media_only: bool = False,
+    radius: int = 5,
+) -> dict:
+    """Files beside this one in the same folder.
+
+    ``around`` is a short window centered on ``file_id``. Previous and next
+    follow the same order as the folder listing. ``media_only`` keeps the
+    walk on images and videos.
+    """
+    order_key = sort if sort in _FOLDER_ORDERS else "path"
+    order = _FOLDER_ORDERS[order_key]
+    normalized = (file_path or "").replace("\\", "/")
+    parent = str(Path(normalized).parent)
+    if parent == ".":
+        parent = ""
+    where, params, _prefix = _folder_where(
+        drive, parent, hide_hidden=hide_hidden, media_only=media_only
+    )
+    radius = max(1, int(radius))
+    sql = f"""
+        WITH folder AS (
+            SELECT f.id, f.hash, f.file_path, f.file_type,
+                   ROW_NUMBER() OVER (ORDER BY {order}, f.id) AS n,
+                   COUNT(*) OVER () AS total,
+                   SUM(CASE WHEN f.file_type = 'Image' THEN 1 ELSE 0 END) OVER () AS images,
+                   SUM(CASE WHEN f.file_type = 'Video' THEN 1 ELSE 0 END) OVER () AS videos
+            FROM files f
+            {where}
+        )
+        SELECT id, hash, file_path, file_type, n, total, images, videos
+        FROM folder
+        WHERE id = ?
+           OR n BETWEEN (SELECT n - ? FROM folder WHERE id = ?)
+                    AND (SELECT n + ? FROM folder WHERE id = ?)
+        ORDER BY n
+    """
+    conn = connect(readonly=True)
+    try:
+        rows = conn.execute(
+            sql, [*params, file_id, radius, file_id, radius, file_id]
+        ).fetchall()
+    finally:
+        conn.close()
+    current = next((row for row in rows if int(row["id"]) == int(file_id)), None)
+    if current is None:
+        return _empty_neighbors(order_key, media_only)
+
+    def _item(row) -> dict:
+        path = row["file_path"] or ""
+        return {
+            "id": int(row["id"]),
+            "name": Path(path.replace("\\", "/")).name,
+            "file_type": row["file_type"] or "",
+            "hash": row["hash"] or "",
+            "index": int(row["n"]),
+            "current": int(row["id"]) == int(file_id),
+        }
+
+    around = [_item(row) for row in rows]
+    here = int(current["n"])
+    prev_item = next((item for item in around if item["index"] == here - 1), None)
+    next_item = next((item for item in around if item["index"] == here + 1), None)
+    total = int(current["total"] or 0)
+    images = int(current["images"] or 0)
+    videos = int(current["videos"] or 0)
+    if media_only:
+        if images and videos:
+            noun = "photos and videos"
+        elif videos:
+            noun = "video" if total == 1 else "videos"
+        else:
+            noun = "photo" if total == 1 else "photos"
+    else:
+        noun = "file" if total == 1 else "files"
+    return {
+        "total": total,
+        "total_fmt": f"{total:,}",
+        "index": here,
+        "noun": noun,
+        "media": media_only,
+        "sort": order_key,
+        "images": images,
+        "videos": videos,
+        "prev": prev_item,
+        "next": next_item,
+        "around": around,
     }
 
 

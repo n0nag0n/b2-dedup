@@ -11,6 +11,7 @@
         <button type="submit">Search</button>
     </p>
     <input type="hidden" name="path" value="{{ path }}">
+    {% if layout %}<input type="hidden" name="layout" value="{{ layout }}">{% endif %}
     <div class="filter-row">
         <label>Show
             <select name="view">
@@ -199,12 +200,58 @@
 {% endif %}
 {% endif %}
 
-<h2 class="results-heading">Files</h2>
-<p class="meta">{{ folder_files.total_fmt }} {% if folder_files.total == 1 %}file{% else %}files{% endif %}</p>
+<div class="results-tools">
+    <h2 class="results-heading">Files</h2>
+    <nav class="layout-toggle" aria-label="Folder layout">
+        <a href="{{ photos_href }}" {% if folder_layout == 'photos' %}aria-current="page"{% endif %}>Photos</a>
+        <a href="{{ list_href }}" {% if folder_layout == 'list' %}aria-current="page"{% endif %}>List</a>
+    </nav>
+</div>
+<p class="meta">
+    {% if folder_layout == 'photos' %}
+    {{ folder_files.visual_label }}
+    {% if folder_other == 1 %}
+    <span class="muted">· 1 other file stays in the list</span>
+    {% elif folder_other %}
+    <span class="muted">· {{ folder_other }} other files stay in the list</span>
+    {% endif %}
+    {% else %}
+    {{ folder_files.total_fmt }} {% if folder_files.total == 1 %}file{% else %}files{% endif %}
+    {% endif %}
+</p>
 {% if folder_files.files %}
+{% if folder_layout == 'photos' %}
+<p class="pick-all-row">
+    <label class="check">
+        <input type="checkbox" class="pick-all" data-pick-group="folder-files">
+        Select all on this page
+    </label>
+</p>
+<ul class="photo-grid">
+    {% for f in folder_files.files %}
+    <li class="photo-pick">
+        <label class="photo-check">
+            <input class="pick" type="checkbox" name="file_id" value="{{ f.id }}" form="pick-form" data-pick-group="folder-files" aria-label="Select {{ f.name }}">
+        </label>
+        <a href="/file/{{ f.id }}{% if sort != 'path' %}?sort={{ sort | urlencode }}{% endif %}" title="{{ f.name }}">
+            {% if f.thumb_url %}
+            <img src="{{ f.thumb_url }}" alt="" width="400" height="400">
+            {% else %}
+            <span class="thumb-ph">
+                {% if f.file_type == 'Video' %}▶ Video{% elif f.file_type %}<span class="badge">{{ f.file_type }}</span>{% endif %}
+                {{ f.name[:22] }}
+            </span>
+            {% endif %}
+            <span class="thumb-cap">{{ f.name }}</span>
+        </a>
+    </li>
+    {% endfor %}
+</ul>
+{% else %}
 {% with files=folder_files.files, show_drive=false, pick_group='folder-files' %}
 {% include "_file_table.html" %}
 {% endwith %}
+{% endif %}
 {% set results = folder_files %}
 {% include "_pager.html" %}
 {% else %}

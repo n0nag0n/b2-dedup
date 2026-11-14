@@ -17,6 +17,8 @@ from core.bulk import (
     save_pick,
 )
 from core.catalog import (
+    choose_folder_layout,
+    folder_composition,
     get_drive_names,
     get_file_types,
     list_folder_files,
@@ -33,6 +35,7 @@ from core.library import (
     list_months,
     list_years,
 )
+from core.thumbs import thumb_url
 from web.templating import page_vars, session_key, set_notice, templates
 
 router = APIRouter()
@@ -65,6 +68,17 @@ def _kept_query(**params: str) -> str:
     return urlencode(clean)
 
 
+def _layout_href(drive: str, path: str, filters: str, target: str) -> str:
+    query = urlencode(
+        [("drive", drive), ("path", path), ("layout", target)]
+        if path
+        else [("drive", drive), ("layout", target)]
+    )
+    if filters:
+        query = f"{query}&{filters}"
+    return f"/search?{query}"
+
+
 def _mark_in_set(request: Request, files: list[dict]) -> None:
     in_set = set(restore_set.list_ids(session_key(request)))
     for item in files:
@@ -85,6 +99,7 @@ def search_page(
     hidden: str = "",
     sort: str = "path",
     view: str = "files",
+    layout: str = "",
     title: str = "",
     day: str = "",
     folder: str = "",
@@ -108,6 +123,9 @@ def search_page(
     view = (view or "files").strip().lower()
     if view not in {"files", "moments", "moment"}:
         view = "files"
+    layout = (layout or "").strip().lower()
+    if layout not in {"photos", "list"}:
+        layout = ""
     if view == "moment" and not (title or day or folder):
         view = "moments"
     hide_hidden = hidden != "1"
@@ -123,6 +141,10 @@ def search_page(
     months: list[dict] = []
     moments: list[dict] = []
     moment = None
+    folder_layout = "list"
+    folder_other = 0
+    photos_href = ""
+    list_href = ""
 
     if view == "moment":
         mode = "moment"
@@ -178,6 +200,24 @@ def search_page(
         listed = list_subdirs(drive, path, hide_hidden=hide_hidden, seek=seek)
         dirs = listed["dirs"]
         next_seek = listed["next_seek"]
+        composition = folder_composition(
+            drive,
+            path,
+            hide_hidden=hide_hidden,
+            file_type=file_type,
+            origin=origin,
+            ext=ext,
+            year=year,
+            month=month,
+        )
+        folder_layout = choose_folder_layout(
+            layout,
+            total=composition["total"],
+            images=composition["images"],
+            videos=composition["videos"],
+            file_type=file_type,
+        )
+        media_only = folder_layout == "photos" and not file_type
         folder_files = list_folder_files(
             drive,
             path,
@@ -189,10 +229,19 @@ def search_page(
             month=month,
             sort=sort,
             page=page,
+            media_only=media_only,
         )
+        if media_only:
+            folder_other = max(
+                composition["total"] - composition["images"] - composition["videos"],
+                0,
+            )
+        if folder_layout == "photos":
+            for item in folder_files["files"]:
+                item["thumb_url"] = thumb_url(item.get("hash") or "")
         _mark_in_set(request, folder_files["files"])
 
-    walk = _kept_query(
+    filters = _kept_query(
         type=file_type,
         origin=origin,
         ext=ext,
@@ -201,6 +250,19 @@ def search_page(
         sort="" if sort == "path" else sort,
         hidden="" if hide_hidden else "1",
     )
+    walk = _kept_query(
+        type=file_type,
+        origin=origin,
+        ext=ext,
+        year=year,
+        month=month,
+        sort="" if sort == "path" else sort,
+        hidden="" if hide_hidden else "1",
+        layout=layout,
+    )
+    if drive and mode == "folder":
+        photos_href = _layout_href(drive, path, filters, "photos")
+        list_href = _layout_href(drive, path, filters, "list")
     moment_keep = _kept_query(
         type=file_type,
         drive=drive,
@@ -224,6 +286,11 @@ def search_page(
             hide_hidden=hide_hidden,
             sort=sort,
             view=view,
+            layout=layout,
+            folder_layout=folder_layout,
+            folder_other=folder_other,
+            photos_href=photos_href,
+            list_href=list_href,
             form_view="moments" if view in {"moments", "moment"} else "files",
             mode=mode,
             results=results,
