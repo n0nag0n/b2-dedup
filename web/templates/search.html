@@ -380,5 +380,5 @@ document.querySelectorAll(".photo-grid img").forEach(function (img) {
     <button type="button" id="pick-clear" class="secondary">Clear</button>
     <input type="hidden" name="next" value="{{ request.url.path }}{% if request.url.query %}?{{ request.url.query }}{% endif %}">
 </form>
-<script src="/static/selection.js"></script>
+<script src="/static/selection.js?v={{ asset_v['selection.js'] }}"></script>
 {% endblock %}

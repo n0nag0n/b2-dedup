@@ -62,7 +62,8 @@ def test_nav_is_search_without_library_or_browse():
     assert 'id="site-nav"' in home.text
     assert 'id="nav-toggle"' in home.text
     assert 'id="theme-toggle"' in home.text
-    assert "/static/theme.js" in home.text
+    assert "/static/theme.js?v=" in home.text
+    assert "/static/app.css?v=" in home.text
 
 
 def test_login_has_theme_toggle(monkeypatch):

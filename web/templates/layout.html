@@ -5,9 +5,9 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
     {% include "_theme_boot.html" %}
     <title>{% block title %}StorageInsights{% endblock %}</title>
-    <link rel="stylesheet" href="/static/app.css">
-    <script defer src="/static/alpine.min.js"></script>
-    <script defer src="/static/theme.js"></script>
+    <link rel="stylesheet" href="/static/app.css?v={{ asset_v['app.css'] }}">
+    <script defer src="/static/alpine.min.js?v={{ asset_v['alpine.min.js'] }}"></script>
+    <script defer src="/static/theme.js?v={{ asset_v['theme.js'] }}"></script>
     {% block head %}{% endblock %}
 </head>
 <body>

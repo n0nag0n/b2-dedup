@@ -132,7 +132,7 @@ def test_search_page_shows_filename_places_and_folders():
     assert 'id="pick-form"' in html
     assert 'action="/search/bulk"' in html
     assert 'class="pick"' in html
-    assert "/static/selection.js" in html
+    assert "/static/selection.js?v=" in html
     assert "Also in " in html
     assert 'title="' in html
     # The full path stays on the tooltip; the link text is the file name.

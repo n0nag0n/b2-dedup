@@ -11,6 +11,17 @@ from web.auth import password_required
 WEB_DIR = Path(__file__).resolve().parent
 templates = Jinja2Templates(directory=str(WEB_DIR / "templates"))
 
+# Query string on /static CSS and JS. Bump the entry when that file changes
+# so browsers fetch it without a manual cache clear.
+ASSET_VERSIONS = {
+    "app.css": "1",
+    "alpine.min.js": "1",
+    "theme.js": "1",
+    "selection.js": "1",
+    "scratch.js": "4",
+}
+templates.env.globals["asset_v"] = ASSET_VERSIONS
+
 
 def session_key(request: Request) -> str:
     key = request.session.get("sid")
