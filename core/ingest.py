@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+import sqlite3
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -16,7 +17,7 @@ from tqdm import tqdm
 
 from core.b2 import B2Manager, sanitize_b2_path
 from core.catalog import format_size
-from core.db import get_thread_connection, init_db
+from core.db import commit_exclusive, get_thread_connection, init_db
 from core.hash import sha256_file
 from core.junk import INGEST_SKIP_DIR_NAMES, classify_path, is_ingest_skip
 from core.paths import CACHE_PATH, FILE_COUNT_CACHE_DAYS, POINTER_EXTENSION
@@ -440,13 +441,12 @@ def process_file(args_tuple):
         if existing and same_hash:
             if dry_run:
                 return "already_tracked", filepath
-            _save_record(
+            commit_exclusive(conn, lambda: _save_record(
                 c, existing, file_hash, actual_size, drive_name, file_path,
                 existing[5] if existing[4] else (other_original[0] if other_original else existing[5]),
                 1 if existing[4] else (0 if other_original else 1),
                 meta,
-            )
-            conn.commit()
+            ))
             return "updated", filepath
 
         if other_original:
@@ -455,10 +455,9 @@ def process_file(args_tuple):
             if scan_only:
                 if dry_run:
                     return "would_create_pointer", filepath
-                _save_record(
+                commit_exclusive(conn, lambda: _save_record(
                     c, existing, file_hash, actual_size, drive_name, file_path, None, 0, meta,
-                )
-                conn.commit()
+                ))
                 return "duplicate_recorded", filepath
 
             pointer_content = create_pointer_content(file_hash, original_upload_path)
@@ -466,52 +465,51 @@ def process_file(args_tuple):
 
             if b2.file_exists(pointer_remote_path):
                 if not dry_run:
-                    _save_record(
+                    commit_exclusive(conn, lambda: _save_record(
                         c, existing, file_hash, actual_size, drive_name, file_path, None, 0, meta,
-                    )
-                    conn.commit()
+                    ))
                 return "pointer_exists", filepath
 
             if dry_run:
                 return "would_create_pointer", filepath
 
             b2.upload_bytes(pointer_content, pointer_remote_path)
-            _save_record(
+            commit_exclusive(conn, lambda: _save_record(
                 c, existing, file_hash, actual_size, drive_name, file_path, None, 0, meta,
-            )
-            conn.commit()
+            ))
             return "pointer_created", filepath
 
         if scan_only:
             if dry_run:
                 return "would_upload", filepath
-            _save_record(
+            commit_exclusive(conn, lambda: _save_record(
                 c, existing, file_hash, actual_size, drive_name, file_path, None, 1, meta,
-            )
-            conn.commit()
+            ))
             return "scanned", filepath
 
         if b2.file_exists(remote_name):
             if not dry_run:
-                _save_record(
+                commit_exclusive(conn, lambda: _save_record(
                     c, existing, file_hash, actual_size, drive_name, file_path, remote_name, 1, meta,
-                )
-                conn.commit()
+                ))
             return "exists", filepath
 
         if dry_run:
             return "would_upload", filepath
 
         b2.upload_file(filepath, remote_name)
-        rowcount = _save_record(
+        rowcount = commit_exclusive(conn, lambda: _save_record(
             c, existing, file_hash, actual_size, drive_name, file_path, remote_name, 1, meta,
-        )
-        conn.commit()
+        ))
         if rowcount == 0 and not existing:
             return "race_duplicate", filepath
         return "uploaded", filepath
 
     except Exception as e:
+        try:
+            conn.rollback()
+        except sqlite3.Error:
+            pass
         return "error", filepath, str(e)
 
 

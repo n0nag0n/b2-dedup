@@ -1,5 +1,6 @@
 """Junk-aware walk, incremental skip, and ingest preview."""
 import os
+import sqlite3
 from pathlib import Path
 
 from core.ingest import (
@@ -119,6 +120,76 @@ def test_changed_file_is_rehashed(tmp_path, monkeypatch):
     os.utime(photo, (photo.stat().st_atime + 10, photo.stat().st_mtime + 10))
     result = process_file((photo, rel, "TestDrive", True, False, None))
     assert result[0] == "scanned"
+
+
+def test_parallel_scan_records_every_file(tmp_path, monkeypatch):
+    _isolate_db(tmp_path, monkeypatch)
+    source = tmp_path / "drive"
+    for i in range(40):
+        _write(source / f"file-{i}.txt", f"data-{i}".encode())
+    from core.ingest import run_ingest
+
+    result = run_ingest(
+        source, "TestDrive", None, scan_only=True, workers=8, show_progress_bar=False,
+    )
+    assert result["stats"]["error"] == 0
+    assert result["stats"]["scanned"] == 40
+    assert result["errors"] == []
+
+
+def test_locked_catalog_write_is_retried(tmp_path, monkeypatch):
+    _isolate_db(tmp_path, monkeypatch)
+    source = tmp_path / "drive"
+    photo = _write(source / "Pictures" / "IMG.JPG", b"original-bytes")
+    rel = Path("Pictures/IMG.JPG")
+    import core.ingest as ingest
+
+    real = ingest._save_record
+    calls = {"n": 0}
+
+    def flaky(*args, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise sqlite3.OperationalError("database is locked")
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(ingest, "_save_record", flaky)
+    result = process_file((photo, rel, "TestDrive", True, False, None))
+    assert result[0] == "scanned"
+    assert calls["n"] == 2
+
+    from core.db import connect
+
+    conn = connect()
+    try:
+        count = conn.execute("SELECT COUNT(*) FROM files").fetchone()[0]
+    finally:
+        conn.close()
+    assert count == 1
+
+
+def test_stale_read_transaction_can_still_commit(tmp_path, monkeypatch):
+    """A worker left inside a read transaction must not fail the next write."""
+    _isolate_db(tmp_path, monkeypatch)
+    from core.db import commit_exclusive, connect, get_thread_connection
+
+    conn = get_thread_connection()
+    conn.execute("BEGIN")
+    conn.execute("SELECT COUNT(*) FROM files")
+    other = connect()
+    try:
+        other.execute("CREATE TABLE lockprobe (n INTEGER)")
+        other.commit()
+    finally:
+        other.close()
+
+    commit_exclusive(conn, lambda: conn.execute("INSERT INTO lockprobe (n) VALUES (1)"))
+    check = connect()
+    try:
+        assert check.execute("SELECT n FROM lockprobe").fetchone()[0] == 1
+        assert conn.in_transaction is False
+    finally:
+        check.close()
 
 
 def test_host_path_stays_inside_root(tmp_path):
