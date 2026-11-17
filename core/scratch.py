@@ -1,9 +1,9 @@
 """Browser-upload staging for scratch drives.
 
-Dropped files land in the configured staging folder (``data/scratch/<batch>/``
-unless a different folder was chosen) and are then handed to the normal ingest
-job. Hashing, junk rules, dedup pointers, and catalog rows behave exactly as
-they do for a plugged-in disk.
+Dropped files land in ``data/scratch/<batch-id>/`` and are then handed to the
+normal ingest job. Hashing, junk rules, dedup pointers, and catalog rows
+behave exactly as they do for a plugged-in disk. The batch id is the waiting
+folder. It is not a path inside the vault.
 
 A successful ingest removes its staged batch. A batch with per-file errors is
 kept so it can be retried, and old batches expire after the configured number
@@ -73,55 +73,35 @@ def new_batch_id() -> str:
 
 
 def default_vault_prefix() -> str:
-    """Folder inside the scratch drive for the next upload.
+    """Vault folder suggested before the Scratch page picks one.
 
-    The built-in ``data/scratch`` directory stays at the top of the drive.
-    A folder the user picked contributes its own name, so staging in
-    ``.../asus-backup`` is stored as ``Scratch/asus-backup/…``.
+    The waiting folder is only a batch id, so it does not name a path in the vault.
     """
-    root = staging_root()
-    try:
-        if root.resolve() == Path(SCRATCH_DIR).resolve():
-            return ""
-    except OSError:
-        return ""
-    name = root.name.strip()
-    if not name or name in {".", ".."}:
-        return ""
-    try:
-        return sanitize_rel_path(name)
-    except ScratchError:
-        return ""
+    return ""
 
 
 def staging_root() -> Path:
     """Folder that receives new uploads.
 
-    An empty config uses ``SCRATCH_DIR`` (``data/scratch``). Tests patch that
-    constant; a saved absolute path overrides it.
+    Always ``SCRATCH_DIR`` (``data/scratch/<batch-id>/``). A folder chosen
+    earlier is not used for new uploads. ``scratch_roots`` still lists it so
+    a batch left there can be ingested or deleted.
     """
-    from core.config import get_scratch_staging_dir
-
-    raw = get_scratch_staging_dir()
-    if raw:
-        path = Path(raw).expanduser()
-        if path.is_absolute():
-            try:
-                return path.resolve()
-            except OSError:
-                return path
     return SCRATCH_DIR
 
 
 def scratch_roots() -> list[Path]:
     """Staging folders whose batches this app is allowed to list or delete.
 
-    Includes the active folder, the default ``data/scratch``, and folders the
-    user used before changing the setting. Cleanup never walks outside these.
+    Includes the default ``data/scratch`` folder and any folder that was used
+    before. Cleanup never walks outside these.
     """
-    from core.config import get_scratch_staging_history
+    from core.config import get_scratch_staging_dir, get_scratch_staging_history
 
     candidates = [staging_root(), SCRATCH_DIR]
+    raw = get_scratch_staging_dir()
+    if raw:
+        candidates.append(Path(raw).expanduser())
     for item in get_scratch_staging_history():
         candidates.append(Path(item).expanduser())
     roots: list[Path] = []
@@ -542,6 +522,29 @@ def _apply_client_mtime(target: Path, last_modified_ms) -> None:
         pass
 
 
+def incomplete_count(batch_id: str) -> int:
+    """Unfinished pieces for one batch. They are not ingested until they finish."""
+    text = (batch_id or "").strip()
+    if not BATCH_RE.fullmatch(text):
+        return 0
+    count = 0
+    for root in scratch_roots():
+        incoming = root / INCOMING_DIR_NAME / text
+        if not incoming.is_dir():
+            continue
+        try:
+            entries = list(incoming.iterdir())
+        except OSError:
+            continue
+        for entry in entries:
+            try:
+                if entry.is_file() and not entry.is_symlink():
+                    count += 1
+            except OSError:
+                continue
+    return count
+
+
 def _batch_files(batch: Path) -> tuple[int, int]:
     files = 0
     total = 0
@@ -659,6 +662,41 @@ def list_batches() -> list[dict]:
                 "when": datetime.fromtimestamp(mtime).strftime("%Y-%m-%d %H:%M"),
                 "mtime": mtime,
                 "active": key in active,
+                "incomplete": incomplete_count(entry.name),
+            })
+    # A file that stopped mid-upload lives under .incoming and has no batch folder yet.
+    seen_ids = {item["id"] for item in batches}
+    for root in scratch_roots():
+        incoming = root / INCOMING_DIR_NAME
+        if not incoming.is_dir():
+            continue
+        try:
+            leftovers = list(incoming.iterdir())
+        except OSError:
+            continue
+        for entry in leftovers:
+            if not entry.is_dir() or not BATCH_RE.fullmatch(entry.name):
+                continue
+            if entry.name in seen_ids:
+                continue
+            partials = incomplete_count(entry.name)
+            if partials == 0:
+                continue
+            try:
+                mtime = entry.stat().st_mtime
+            except OSError:
+                continue
+            seen_ids.add(entry.name)
+            batches.append({
+                "id": entry.name,
+                "path": str(root / entry.name),
+                "files": 0,
+                "bytes": 0,
+                "bytes_fmt": format_size(0),
+                "when": datetime.fromtimestamp(mtime).strftime("%Y-%m-%d %H:%M"),
+                "mtime": mtime,
+                "active": False,
+                "incomplete": partials,
             })
     batches.sort(key=lambda item: item["mtime"], reverse=True)
     return batches
@@ -688,7 +726,10 @@ def scratch_usage() -> dict:
 def cleanup_batch(batch_id: str, *, allow_active: bool = False) -> bool:
     batch = batch_dir(batch_id, must_exist=True)
     if batch is None:
-        return False
+        if incomplete_count(batch_id) == 0:
+            return False
+        discard_partials(batch_id)
+        return incomplete_count(batch_id) == 0
     if not allow_active:
         try:
             if str(batch.resolve()) in _active_scratch_sources():

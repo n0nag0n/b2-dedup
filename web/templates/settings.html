@@ -196,7 +196,6 @@
             {{ scratch.batches }} staged batch{{ "" if scratch.batches == 1 else "es" }} ·
             {{ "{:,}".format(scratch.files) }} files · {{ scratch.bytes_fmt }}
             {% if scratch.free_fmt %}· {{ scratch.free_fmt }} free on that disk{% endif %}
-            · <code class="wrap">{{ scratch_staging }}</code>
         </p>
         <ul class="copy-list">
             {% for name in scratch_drives %}
@@ -225,9 +224,10 @@
             </p>
         </form>
         <p class="hint">
-            <a href="/scratch?browse=1">Choose a different folder</a> on the Scratch page.
-            Pick a folder that is only for Scratch: batches there are deleted after a
-            successful ingest, or after the retention period if they were never ingested.
+            Each upload waits in its own folder on this computer, named with a random id.
+            Scratch lists it until you ingest it. A successful ingest deletes that folder.
+            An upload that stops partway stays on the Scratch page so you can ingest what
+            arrived or delete it.
         </p>
         <div class="settings-pair">
             <form method="post" action="/settings/scratch" class="restore-form">

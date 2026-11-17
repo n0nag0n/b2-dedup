@@ -510,7 +510,8 @@ def test_scratch_page_offers_drives_without_bucket_field(tmp_path, monkeypatch):
     assert 'name="bucket"' not in response.text
     assert "No B2 bucket is set yet" in response.text
     assert 'href="/settings"' in response.text
-    assert "Change folder" in response.text
+    assert "Change folder" not in response.text
+    assert "Folder in the drive" in response.text
     assert "Add a drive" in response.text
 
 
@@ -621,11 +622,10 @@ def test_staging_folder_browser_and_upload_location(tmp_path, monkeypatch):
     (photos / "keep.txt").write_text("leave me", encoding="utf-8")
 
     client = TestClient(app)
-    listing = client.get("/scratch", params={"browse": "1", "path": str(host)})
-    assert listing.status_code == 200
-    assert "photos" in listing.text
-    assert "Use this folder" in listing.text
-    assert "keep.txt" not in listing.text
+    page = client.get("/scratch")
+    assert page.status_code == 200
+    assert "Change folder" not in page.text
+    assert "Use this folder" not in page.text
 
     chosen = client.post(
         "/scratch/staging",
@@ -663,8 +663,8 @@ def test_staging_folder_browser_and_upload_location(tmp_path, monkeypatch):
     batch = scratch.new_batch_id()
     saved = scratch.save_upload(io.BytesIO(b"hello"), batch, "a.txt")
     assert saved["skipped"] is False
-    assert (photos / batch / "a.txt").read_bytes() == b"hello"
-    assert not (tmp_path / "scratch" / batch).exists()
+    assert (tmp_path / "scratch" / batch / "a.txt").read_bytes() == b"hello"
+    assert not (photos / batch).exists()
 
 
 def test_previous_staging_folder_stays_listed(tmp_path, monkeypatch):
@@ -677,7 +677,8 @@ def test_previous_staging_folder_stays_listed(tmp_path, monkeypatch):
     second.mkdir()
     set_scratch_staging_dir(str(first))
     batch = scratch.new_batch_id()
-    scratch.save_upload(io.BytesIO(b"hello"), batch, "a.txt")
+    (first / batch).mkdir()
+    (first / batch / "a.txt").write_bytes(b"hello")
     set_scratch_staging_dir(str(second))
 
     listed = scratch.list_batches()
@@ -692,7 +693,8 @@ def test_settings_adds_and_removes_scratch_drives(tmp_path, monkeypatch):
     client = TestClient(app)
     page = client.get("/settings")
     assert "Add a scratch drive" in page.text
-    assert "Choose a different folder" in page.text
+    assert "random id" in page.text
+    assert "Choose a different folder" not in page.text
     assert "B2 bucket" in page.text
 
     added = client.post(
@@ -718,3 +720,92 @@ def test_settings_adds_and_removes_scratch_drives(tmp_path, monkeypatch):
         follow_redirects=False,
     )
     assert get_scratch_drives() == ["Scratch"]
+
+
+def test_destination_folders_come_from_the_catalog(tmp_path, monkeypatch):
+    _isolate(tmp_path, monkeypatch)
+    monkeypatch.setattr("core.db.DB_PATH", tmp_path / "b2_dedup.db")
+    from core.db import connect, init_db
+    from core.ingest import insert_file_record
+
+    init_db()
+    meta = {
+        "mtime": "2026-01-01T00:00:00",
+        "ctime": None,
+        "atime": None,
+        "mime_type": "application/pdf",
+        "file_type": "Document",
+    }
+    conn = connect()
+    try:
+        cur = conn.cursor()
+        insert_file_record(
+            cur, "a" * 64, 10, "Scratch", "receipts/2026/a.pdf",
+            "Scratch/receipts/2026/a.pdf", 1, meta,
+        )
+        insert_file_record(
+            cur, "b" * 64, 10, "Scratch", "receipts/2024/b.pdf",
+            "Scratch/receipts/2024/b.pdf", 1, meta,
+        )
+        insert_file_record(
+            cur, "c" * 64, 10, "Other", "secret/c.pdf",
+            "Other/secret/c.pdf", 1, meta,
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    client = TestClient(app)
+    page = client.get("/scratch")
+    assert "receipts" in page.text
+    assert "secret" not in page.text
+    assert 'value=""' in page.text
+
+    nested = client.get("/scratch", params={"dest": "receipts"})
+    assert 'value="receipts"' in nested.text
+    assert 'href="/scratch?dest=receipts%2F2026"' in nested.text
+    assert 'href="/scratch?dest=receipts%2F2024"' in nested.text
+    assert "secret" not in nested.text
+
+    created = client.get(
+        "/scratch",
+        params={"dest": "receipts", "new": "2027"},
+        follow_redirects=False,
+    )
+    assert created.status_code == 303
+    assert created.headers["location"] == "/scratch?dest=receipts%2F2027"
+
+    shown = client.get("/scratch", params={"dest": "receipts/2027"})
+    assert 'value="receipts/2027"' in shown.text
+    assert "Uploads into this path will create it" in shown.text
+
+    rejected = client.get("/scratch", params={"new": "a/b"}, follow_redirects=True)
+    assert "slashes" in rejected.text
+
+
+def test_incomplete_upload_stays_listed(tmp_path, monkeypatch):
+    _isolate(tmp_path, monkeypatch)
+    batch = scratch.new_batch_id()
+    result = scratch.write_chunk(io.BytesIO(b"abcd"), batch, "clip.mp4", "0", "10")
+    assert result["complete"] is False
+
+    listed = scratch.list_batches()
+    assert listed[0]["id"] == batch
+    assert listed[0]["files"] == 0
+    assert listed[0]["incomplete"] == 1
+
+    client = TestClient(app)
+    page = client.get("/scratch")
+    assert batch in page.text
+    assert "1 incomplete" in page.text
+    assert 'action="/scratch/finish"' not in page.text
+    assert 'action="/scratch/cleanup"' in page.text
+
+    removed = client.post(
+        "/scratch/cleanup",
+        data={"batch": batch},
+        follow_redirects=False,
+    )
+    assert removed.status_code == 303
+    assert scratch.list_batches() == []
+    assert scratch.incomplete_count(batch) == 0

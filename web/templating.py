@@ -18,7 +18,7 @@ ASSET_VERSIONS = {
     "alpine.min.js": "1",
     "theme.js": "1",
     "selection.js": "1",
-    "scratch.js": "4",
+    "scratch.js": "5",
 }
 templates.env.globals["asset_v"] = ASSET_VERSIONS
 

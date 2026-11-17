@@ -325,11 +325,11 @@ def test_scratch_page_uses_the_staging_folder_name(tmp_path, monkeypatch):
     chosen = tmp_path / "asus-backup"
     chosen.mkdir()
     set_scratch_staging_dir(str(chosen))
-    assert default_vault_prefix() == "asus-backup"
+    assert default_vault_prefix() == ""
 
     client = TestClient(app)
     page = client.get("/scratch")
     assert page.status_code == 200
     assert 'id="scratch-prefix"' in page.text
-    assert 'value="asus-backup"' in page.text
-    assert "only the waiting area" in page.text
+    assert 'name="dest" type="text" value=""' in page.text
+    assert "only the waiting area" not in page.text

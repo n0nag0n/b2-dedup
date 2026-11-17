@@ -7,8 +7,9 @@ Settings and is not edited here.
 """
 from __future__ import annotations
 
+import sqlite3
 from pathlib import Path
-from urllib.parse import urlencode
+from urllib.parse import quote, urlencode
 
 from fastapi import APIRouter, File, Form, Request, UploadFile
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
@@ -24,6 +25,7 @@ from core.config import (
     set_scratch_drive_name,
     set_scratch_staging_dir,
 )
+from core.catalog import list_subdirs
 from core.jobs import enqueue
 from core.junk import INGEST_SKIP_DIR_NAMES, INGEST_SKIP_FILE_NAMES
 from core.scratch import (
@@ -35,13 +37,13 @@ from core.scratch import (
     batch_stats,
     cleanup_batch,
     create_child_dir,
-    default_vault_prefix,
     folder_crumbs,
     join_prefix,
     list_batches,
     list_child_dirs,
     parent_dir,
     resolve_browse_dir,
+    sanitize_rel_path,
     save_upload,
     scratch_usage,
     write_chunk,
@@ -96,6 +98,72 @@ def _browse_url(path: str = "") -> str:
     return "/scratch?" + urlencode(query)
 
 
+def _folder_or_none(raw: str) -> str | None:
+    """A vault folder relative to the scratch drive. Empty means the top."""
+    text = (raw or "").strip()
+    if not text:
+        return ""
+    try:
+        return sanitize_rel_path(text)
+    except ScratchError:
+        return None
+
+
+def _one_segment(raw: str) -> str | None:
+    """One new folder name, with no slashes."""
+    text = (raw or "").strip().strip("/")
+    if not text or "/" in text or "\\" in text or text in {".", ".."}:
+        return None
+    try:
+        return sanitize_rel_path(text)
+    except ScratchError:
+        return None
+
+
+def _dest_url(prefix: str) -> str:
+    return "/scratch?dest=" + quote(prefix, safe="")
+
+
+def _vault_view(drive: str, prefix: str) -> dict:
+    """Child folders of ``prefix`` from the catalog. Does not call B2."""
+    parts = [part for part in prefix.split("/") if part] if prefix else []
+    crumbs = [{
+        "label": drive,
+        "href": "/scratch?dest=" if parts else "",
+    }]
+    built: list[str] = []
+    for index, part in enumerate(parts):
+        built.append(part)
+        path = "/".join(built)
+        crumbs.append({
+            "label": part,
+            "href": "" if index == len(parts) - 1 else _dest_url(path),
+        })
+    parent_href = ""
+    if parts:
+        parent_href = _dest_url("/".join(parts[:-1]))
+    try:
+        listed = list_subdirs(drive, prefix, hide_hidden=True, limit=300)
+    except (sqlite3.Error, OSError):
+        return {
+            "crumbs": crumbs,
+            "dirs": [],
+            "parent_href": parent_href,
+            "truncated": False,
+            "error": True,
+        }
+    return {
+        "crumbs": crumbs,
+        "dirs": [
+            {"name": item["name"], "href": _dest_url(item["path"])}
+            for item in listed["dirs"]
+        ],
+        "parent_href": parent_href,
+        "truncated": bool(listed["next_seek"]),
+        "error": False,
+    }
+
+
 def _listing(current: Path) -> dict:
     dirs, truncated = list_child_dirs(current)
     staging = staging_root()
@@ -132,7 +200,6 @@ def _page(request: Request, **extra):
             junk_files=sorted(INGEST_SKIP_FILE_NAMES),
             staging_path=str(root),
             staging_ok=staging_is_ready(root),
-            vault_prefix=default_vault_prefix(),
             home_path=str(Path.home()),
             **extra,
         ),
@@ -140,7 +207,41 @@ def _page(request: Request, **extra):
 
 
 @router.get("/scratch", response_class=HTMLResponse)
-def scratch_page(request: Request, browse: str = "", path: str = ""):
+def scratch_page(
+    request: Request,
+    browse: str = "",
+    path: str = "",
+    drive: str = "",
+    new: str = "",
+):
+    if drive.strip():
+        known = _known_drive(drive)
+        if known:
+            set_scratch_drive_name(known)
+        else:
+            set_notice(request, "That scratch drive is not in the list. Add it first.")
+
+    params = request.query_params
+    if "dest" in params:
+        prefix = _folder_or_none(params.get("dest") or "")
+        if prefix is None:
+            set_notice(request, "That folder path is not valid.")
+            return RedirectResponse("/scratch", status_code=303)
+    else:
+        prefix = ""
+
+    if new.strip():
+        segment = _one_segment(new)
+        if segment is None:
+            set_notice(request, "Folder names cannot contain slashes.")
+            return RedirectResponse(_dest_url(prefix) if prefix else "/scratch?dest=", status_code=303)
+        try:
+            joined = sanitize_rel_path(f"{prefix}/{segment}" if prefix else segment)
+        except ScratchError:
+            set_notice(request, "That folder name is not valid.")
+            return RedirectResponse(_dest_url(prefix) if prefix else "/scratch?dest=", status_code=303)
+        return RedirectResponse(_dest_url(joined), status_code=303)
+
     listing = None
     if browse == "1":
         requested = path.strip()
@@ -151,7 +252,14 @@ def scratch_page(request: Request, browse: str = "", path: str = ""):
             set_notice(request, str(exc))
             if requested:
                 return RedirectResponse(_browse_url(), status_code=303)
-    return _page(request, browsing=listing is not None, listing=listing)
+    selected = get_scratch_drive_name()
+    return _page(
+        request,
+        browsing=listing is not None,
+        listing=listing,
+        vault_prefix=prefix,
+        vault=_vault_view(selected, prefix),
+    )
 
 
 @router.post("/scratch/upload")
@@ -297,8 +405,8 @@ def scratch_set_staging(request: Request, path: str = Form("")):
     set_scratch_staging_dir(str(chosen))
     set_notice(
         request,
-        f"Scratch uploads will be stored in {chosen}. "
-        "Batches already staged in another folder stay on the list below until you ingest or delete them.",
+        f"Remembered {chosen} so any upload still waiting there can be ingested or deleted. "
+        "New uploads wait in their own folder under the scratch data directory.",
     )
     return RedirectResponse("/scratch", status_code=303)
 

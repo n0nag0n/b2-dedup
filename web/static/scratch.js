@@ -140,12 +140,7 @@
         const files = Number(data.files) || 0;
         let text = `${batches} staged ${batches === 1 ? "batch" : "batches"} · ${files.toLocaleString()} files · ${data.bytes_fmt || "0 B"}`;
         if (data.free_fmt) text += ` · ${data.free_fmt} free on that disk`;
-        text += " · staging folder ";
         usage.textContent = text;
-        const code = document.createElement("code");
-        code.className = "wrap";
-        code.textContent = data.path || "";
-        usage.appendChild(code);
     }
 
     async function refreshUsage() {
@@ -238,8 +233,8 @@
         const drive = selectedDrive() || dest.dataset.drive || "Scratch";
         const prefix = normalizeRel(prefixInput ? prefixInput.value : "").replace(/\/+$/, "");
         dest.textContent = prefix
-            ? `New uploads are stored as ${drive}/${prefix}/… The staging folder on this computer is only the waiting area.`
-            : `New uploads are stored at the top of ${drive}. Type a folder above to nest them. The staging folder on this computer is only the waiting area.`;
+            ? `New uploads are stored as ${drive}/${prefix}/…`
+            : `New uploads are stored at the top of ${drive}. Pick a folder or type one to nest them.`;
     }
 
     function sleep(ms) {
@@ -575,14 +570,13 @@
     }
     if (driveInput) {
         driveInput.addEventListener("change", () => {
-            syncDriveFields();
-            const body = new URLSearchParams();
-            body.set("drive_name", selectedDrive());
-            fetch("/scratch/drives/select", {
-                method: "POST",
-                headers: { Accept: "application/json" },
-                body,
-            }).catch(() => {});
+            const url = new URL(window.location.href);
+            url.searchParams.set("drive", selectedDrive());
+            url.searchParams.delete("dest");
+            url.searchParams.delete("new");
+            url.searchParams.delete("browse");
+            url.searchParams.delete("path");
+            window.location.assign(`${url.pathname}?${url.searchParams.toString()}`);
         });
     }
 

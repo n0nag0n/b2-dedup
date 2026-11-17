@@ -31,7 +31,8 @@ Web: GET /search (names, one drive's folders, or moments; junk hidden),
 GET /file/{id}, old /browse /library /timeline /moment redirect into /search,
 restore set at /restore-set, ingest wizard at /ingest (preview then job),
 scratch uploads at /scratch (browser files/folders → normal ingest job;
-a custom staging folder's name is the default vault prefix, e.g. Scratch/asus-backup/…),
+the vault folder is chosen on the page from the catalog for that drive;
+each upload waits in data/scratch/<batch-id>/ and that folder is deleted after a successful ingest),
 GET /catalog/move picks an existing folder and shows the stored path before
 POST /catalog/move relocates a file or folder in the catalog and in B2 (job type relocate),
 jobs at /jobs/{id}, Settings at /settings (bucket, catalog backup, verify,
